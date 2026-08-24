@@ -3,11 +3,10 @@
 # Reads the PROCESSED csv (output of preprocessing.R)
 # ============================================================
 
-# install.packages(c("ggplot2", "dplyr"))
 library(ggplot2)
 library(dplyr)
 
-processed_path <- "data/processed/traffic_volume_processed.csv"  # <-- EDIT if needed
+processed_path <- "data/processed/traffic_volume_processed.csv"
 output_dir <- "output"
 if (!dir.exists(output_dir)) dir.create(output_dir)
 
@@ -20,8 +19,7 @@ df$day_of_week <- weekdays(df$date_time)
 df$day_of_week <- factor(
   df$day_of_week,
   levels = c(
-    "Monday", "Tuesday", "Wednesday", "Thursday",
-    "Friday", "Saturday", "Sunday"
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
   )
 )
 
