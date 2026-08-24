@@ -1,16 +1,13 @@
-# ============================================================
-# Preprocessing: Metro Interstate Traffic Volume dataset
-# Raw CSV -> cleaned, feature-engineered CSV ready for modeling
-# ============================================================
-
 library(dplyr)
 library(lubridate)
+library(zoo)
 
 # ---- 0. Paths ----
 raw_path <- "data/raw/Metro_Interstate_Traffic_Volume.csv"
 output_dir <- "data/processed"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 output_path <- file.path(output_dir, "traffic_volume_processed.csv")
+
 
 # ---- 1. Read and normalize column names / whitespace ----
 # The raw file may have padded/whitespace column names and string values
@@ -24,10 +21,12 @@ df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC
 
 cat("Raw rows read:", nrow(df), "\n")
 
+
 # ---- 2. Remove fully duplicated rows ----
 n_before <- nrow(df)
 df <- distinct(df)
 cat("Removed", n_before - nrow(df), "fully duplicated rows.\n")
+
 
 # ---- 3. Collapse remaining duplicate timestamps ----
 # Some hours have multiple rows because OpenWeatherMap logged more than one
@@ -40,7 +39,7 @@ df <- df %>%
   group_by(date_time) %>%
   summarise(
     holiday        = first(holiday),
-    temp           = mean(temp, na.rm = TRUE),
+    temp           = round(mean(temp, na.rm = TRUE), 2),
     rain_1h        = mean(rain_1h, na.rm = TRUE),
     snow_1h        = mean(snow_1h, na.rm = TRUE),
     clouds_all     = mean(clouds_all, na.rm = TRUE),
@@ -51,11 +50,13 @@ df <- df %>%
   arrange(date_time)
 cat("Collapsed", n_before - nrow(df), "duplicate-timestamp rows into", nrow(df), "unique hourly rows.\n")
 
+
 # ---- 4. Text normalization ----
 # Standardize case so e.g. "Sky is Clear" and "sky is clear" are not treated
 # as different categories.
-df$holiday      <- tolower(df$holiday)
+df$holiday <- tolower(df$holiday)
 df$weather_main <- tolower(df$weather_main)
+
 
 # ---- 5. Fix known mislabeled holiday date ----
 # "christmas day" is mislabeled on 2016-12-26 in the raw data; it belongs on
@@ -64,6 +65,7 @@ mis_idx <- which(df$holiday == "christmas day" & as.Date(df$date_time) == as.Dat
 df$holiday[mis_idx] <- "none"
 fix_idx <- which(df$date_time == as.POSIXct("2016-12-25 00:00:00", tz = "UTC"))
 if (length(fix_idx) > 0) df$holiday[fix_idx] <- "christmas day"
+
 
 # ---- 6. Fix "holiday labeled only on first hour" bug ----
 # In the raw data, a holiday name is only attached to the first available
@@ -83,19 +85,35 @@ df <- df %>%
 cat("Holiday-labeled rows: ", n_before_holiday, " (before fix) -> ",
     sum(df$holiday != "none"), " (after propagating to full day)\n", sep = "")
 
+
 # ---- 7. Binary holiday feature ----
 df$is_holiday <- ifelse(df$holiday != "none", 1L, 0L)
 df$cal_date <- NULL
 df$holiday <- NULL
 
-# ---- 8. Remove physically impossible values ----
+
+# ---- 8. Fix physically impossible values via linear interpolation ----
 # temp == 0 Kelvin is not physically possible (never observed on Earth).
 # rain_1h has one extreme outlier (9831.3 mm/hr); the next-highest value is
 # 55.63 mm/hr, which is physically plausible, so we use 300 mm/hr as a safe
 # cutoff that isolates only the one erroneous record.
+# Rather than dropping these 11 rows (which would punch holes in the hourly
+# series), they are flagged as sensor/logging errors, set to NA, and linearly
+# interpolated from the nearest valid neighbouring hours on either side.
 n_before <- nrow(df)
-df <- df %>% filter(temp > 0, rain_1h <= 300)
-cat("Removed", n_before - nrow(df), "rows with physically impossible values.\n")
+
+n_bad_temp <- sum(df$temp <= 0)
+n_bad_rain <- sum(df$rain_1h > 300)
+
+df$temp[df$temp <= 0] <- NA
+df$rain_1h[df$rain_1h > 300] <- NA
+
+df <- df %>% arrange(date_time)
+df$temp <- na.approx(df$temp, x = as.numeric(df$date_time), rule = 2)
+df$rain_1h <- na.approx(df$rain_1h, x = as.numeric(df$date_time), rule = 2)
+
+cat("Interpolated", n_bad_temp, "temp value(s) and", n_bad_rain, "rain_1h value(s) flagged as physically impossible.\n")
+
 
 # ---- 9. Restrict to a clean, continuous date range ----
 # The dataset has a ~10-month gap between 2014-08-08 and 2015-06-11. Rather
@@ -107,20 +125,23 @@ CUTOFF_DATE <- as.POSIXct("2015-10-01 00:00:00", tz = "UTC")
 n_before <- nrow(df)
 df <- df %>% filter(date_time >= CUTOFF_DATE)
 cat("Removed", n_before - nrow(df), "rows before", format(CUTOFF_DATE),
-    "; final range:", as.character(min(df$date_time)), "to", as.character(max(df$date_time)), "\n")
+    "; final range:", as.character(min(df$date_time)), "to", as.character(max(df$date_time)),
+    "(", nrow(df), "rows )", "\n")
+
 
 # ---- 10. Calendar-derived features (deterministic, safe for forecasting) ----
-df$hour        <- hour(df$date_time)
-df$month       <- month(df$date_time)
+df$hour <- hour(df$date_time)
+df$month <- month(df$date_time)
 df$day_of_week <- wday(df$date_time, label = TRUE, abbr = FALSE)
+
 
 # ---- 11. Keep only the finalized set of columns ----
 # weather_main and the raw holiday name are dropped here; is_holiday already
 # captures the information needed for modeling, and weather_main was already
 # excluded from forecasting inputs per the group report (Section II-C3).
 df <- df %>%
-  select(date_time, temp, rain_1h, snow_1h, clouds_all, is_holiday,
-         hour, month, day_of_week, traffic_volume)
+  select(date_time, temp, rain_1h, snow_1h, clouds_all, is_holiday, hour, month, day_of_week, traffic_volume)
+
 
 # ---- 12. Force a consistent date_time string before writing ----
 # write.csv() on a POSIXct column silently drops "00:00:00" for any row that
@@ -129,6 +150,7 @@ df <- df %>%
 # portion per element, not per column). Converting explicitly to a fixed
 # character format avoids inconsistent timestamps in the output file.
 df$date_time <- format(df$date_time, "%Y-%m-%d %H:%M:%S")
+
 
 # ---- 13. Save processed dataset ----
 write.csv(df, output_path, row.names = FALSE)
