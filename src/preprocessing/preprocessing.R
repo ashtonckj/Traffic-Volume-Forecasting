@@ -83,13 +83,10 @@ df <- df %>%
 cat("Holiday-labeled rows: ", n_before_holiday, " (before fix) -> ",
     sum(df$holiday != "none"), " (after propagating to full day)\n", sep = "")
 
-# ---- 7. Binary holiday features ----
+# ---- 7. Binary holiday feature ----
 df$is_holiday <- ifelse(df$holiday != "none", 1L, 0L)
-
-holiday_dates <- unique(df$cal_date[df$is_holiday == 1])
-df$is_holiday_prev_day <- ifelse((df$cal_date + 1) %in% holiday_dates, 1L, 0L) # tomorrow is a holiday
-df$is_holiday_next_day <- ifelse((df$cal_date - 1) %in% holiday_dates, 1L, 0L) # yesterday was a holiday
 df$cal_date <- NULL
+df$holiday <- NULL
 
 # ---- 8. Remove physically impossible values ----
 # temp == 0 Kelvin is not physically possible (never observed on Earth).
@@ -113,20 +110,27 @@ cat("Removed", n_before - nrow(df), "rows before", format(CUTOFF_DATE),
     "; final range:", as.character(min(df$date_time)), "to", as.character(max(df$date_time)), "\n")
 
 # ---- 10. Calendar-derived features (deterministic, safe for forecasting) ----
-df$hour       <- hour(df$date_time)
-df$day        <- day(df$date_time)
-df$month      <- month(df$date_time)
-df$year       <- year(df$date_time)
-df$weekday    <- wday(df$date_time, label = TRUE, abbr = FALSE)
-df$is_weekend <- ifelse(wday(df$date_time) %in% c(1, 7), 1L, 0L) # Sunday=1, Saturday=7
+df$hour        <- hour(df$date_time)
+df$month       <- month(df$date_time)
+df$day_of_week <- wday(df$date_time, label = TRUE, abbr = FALSE)
 
-# ---- 11. Drop weather_description-equivalent redundancy at source ----
-# weather_description was already excluded upstream (see group report,
-# Section II-B3: Cramer's V = 1.00 with weather_main). Not present after
-# Step 3's aggregation, so no action needed here — kept as a note for
-# documentation traceability.
+# ---- 11. Keep only the finalized set of columns ----
+# weather_main and the raw holiday name are dropped here; is_holiday already
+# captures the information needed for modeling, and weather_main was already
+# excluded from forecasting inputs per the group report (Section II-C3).
+df <- df %>%
+  select(date_time, temp, rain_1h, snow_1h, clouds_all, is_holiday,
+         hour, month, day_of_week, traffic_volume)
 
-# ---- 12. Save processed dataset ----
+# ---- 12. Force a consistent date_time string before writing ----
+# write.csv() on a POSIXct column silently drops "00:00:00" for any row that
+# falls exactly at midnight, while keeping the full timestamp on every other
+# row - this is a documented R quirk (format.POSIXct() decides the time
+# portion per element, not per column). Converting explicitly to a fixed
+# character format avoids inconsistent timestamps in the output file.
+df$date_time <- format(df$date_time, "%Y-%m-%d %H:%M:%S")
+
+# ---- 13. Save processed dataset ----
 write.csv(df, output_path, row.names = FALSE)
 cat("\nSaved processed dataset to:", output_path, "\n")
 cat("Final dimensions:", nrow(df), "rows x", ncol(df), "columns\n")
