@@ -5,6 +5,7 @@
 
 library(ggplot2)
 library(dplyr)
+library(reshape2)
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
 output_dir <- "output"
@@ -25,6 +26,7 @@ df$day_of_week <- factor(
 
 df$holiday_label <- ifelse(df$is_holiday == 1, "Holiday", "No Holiday")
 
+
 # ---- 1. Histogram of traffic volume (shows multimodal daily pattern) ----
 p1 <- ggplot(df, aes(x = traffic_volume)) +
   geom_histogram(binwidth = 200, fill = "#2166AC", color = "white") +
@@ -34,6 +36,7 @@ p1 <- ggplot(df, aes(x = traffic_volume)) +
   theme_minimal()
 print(p1)
 ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height = 5)
+
 
 # ---- 2. Boxplot of traffic volume by day of week ----
 p2 <- ggplot(df, aes(x = day_of_week, y = traffic_volume, fill = day_of_week)) +
@@ -46,6 +49,7 @@ p2 <- ggplot(df, aes(x = day_of_week, y = traffic_volume, fill = day_of_week)) +
 print(p2)
 ggsave(file.path(output_dir, "boxplot_day_of_week.png"), p2, width = 7, height = 5)
 
+
 # ---- 3. Boxplot of traffic volume by holiday status ----
 p3 <- ggplot(df, aes(x = holiday_label, y = traffic_volume, fill = holiday_label)) +
   geom_boxplot() +
@@ -55,6 +59,7 @@ p3 <- ggplot(df, aes(x = holiday_label, y = traffic_volume, fill = holiday_label
   theme(legend.position = "none")
 print(p3)
 ggsave(file.path(output_dir, "boxplot_holiday.png"), p3, width = 6, height = 5)
+
 
 # ---- 4. Average traffic volume by hour of day ----
 hourly_avg <- df %>%
@@ -73,8 +78,33 @@ p4 <- ggplot(hourly_avg, aes(x = hour, y = avg_traffic)) +
 print(p4)
 ggsave(file.path(output_dir, "line_avg_traffic_by_hour.png"), p4, width = 8, height = 5)
 
+
+# ---- 5. Correlation heatmap (numeric variables only) ----
+# Pulls out the numeric columns and computes pairwise correlation.
+numeric_df <- df %>% select(temp, rain_1h, snow_1h, clouds_all, traffic_volume)
+
+cor_matrix <- cor(numeric_df, use = "complete.obs")
+
+# Melt into long format for ggplot
+cor_melted <- melt(cor_matrix)
+
+p7 <- ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 4) +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
+                       midpoint = 0, limit = c(-1, 1),
+                       name = "Correlation") +
+  labs(title = "Correlation Heatmap of Numeric Variables",
+       x = "", y = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p7)
+ggsave(file.path(output_dir, "correlation_heatmap.png"), p7, width = 7, height = 6)
+
 cat("\nAll figures saved to '", output_dir, "/':\n", sep = "")
 cat(" - hist_traffic_volume.png\n")
 cat(" - boxplot_day_of_week.png\n")
 cat(" - boxplot_holiday.png\n")
 cat(" - line_avg_traffic_by_hour.png\n")
+cat(" - correlation_heatmap.png\n")
