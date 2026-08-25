@@ -1,0 +1,97 @@
+{
+  "n_obs": 26212,
+  "date_range": {
+    "start": "2015-10-01",
+    "end": "2018-09-30 23:00:00"
+  },
+  "original": {
+    "stationarity": {
+      "adf": {
+        "statistic": -18.549035,
+        "p_value": 0.01,
+        "stationary": true
+      },
+      "kpss_level": {
+        "statistic": 0.348823,
+        "p_value": 0.099214,
+        "stationary": true
+      },
+      "kpss_trend": {
+        "statistic": 0.163894,
+        "p_value": 0.035088,
+        "stationary": false
+      }
+    },
+    "ljung_box": [
+      {
+        "lag": 24,
+        "statistic": 155364.51814,
+        "p_value": 0,
+        "autocorrelated": true
+      },
+      {
+        "lag": 48,
+        "statistic": 291755.401958,
+        "p_value": 0,
+        "autocorrelated": true
+      },
+      {
+        "lag": 168,
+        "statistic": 967953.683774,
+        "p_value": 0,
+        "autocorrelated": true
+      }
+    ]
+  },
+  "recommended_differencing": {
+    "d_nonseasonal": 0,
+    "D_seasonal_24h": 0,
+    "D_seasonal_168h": 0
+  },
+  "differenced": {
+    "d_applied": 0,
+    "D_applied_24h": 0,
+    "n_obs_after_differencing": 26212,
+    "stationarity": {
+      "adf": {
+        "statistic": -18.549035,
+        "p_value": 0.01,
+        "stationary": true
+      },
+      "kpss_level": {
+        "statistic": 0.348823,
+        "p_value": 0.099214,
+        "stationary": true
+      },
+      "kpss_trend": {
+        "statistic": 0.163894,
+        "p_value": 0.035088,
+        "stationary": false
+      }
+    },
+    "ljung_box": [
+      {
+        "lag": 24,
+        "statistic": 155364.51814,
+        "p_value": 0,
+        "autocorrelated": true
+      },
+      {
+        "lag": 48,
+        "statistic": 291755.401958,
+        "p_value": 0,
+        "autocorrelated": true
+      },
+      {
+        "lag": 168,
+        "statistic": 967953.683774,
+        "p_value": 0,
+        "autocorrelated": true
+      }
+    ]
+  },
+  "stl_decomposition": {
+    "period_used": 24,
+    "approx_seasonal_strength_24h": 0.878441
+  }
+}
