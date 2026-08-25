@@ -31,9 +31,9 @@ df$holiday_label <- ifelse(df$is_holiday == 1, "Holiday", "No Holiday")
 p1 <- ggplot(df, aes(x = traffic_volume)) +
   geom_histogram(binwidth = 200, fill = "#2166AC", color = "white") +
   labs(title = "Distribution of Hourly Traffic Volume",
-       subtitle = "Multimodal shape reflects overnight lull vs. AM/PM commute peaks",
        x = "Traffic Volume (vehicles/hr)", y = "Count") +
-  theme_minimal()
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
 print(p1)
 ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height = 5)
 
@@ -42,10 +42,10 @@ ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height =
 p2 <- ggplot(df, aes(x = day_of_week, y = traffic_volume, fill = day_of_week)) +
   geom_boxplot() +
   labs(title = "Traffic Volume by Day of Week",
-       subtitle = "Weekday volumes cluster higher and tighter than weekends",
        x = "", y = "Traffic Volume (vehicles/hr)") +
   theme_minimal() +
-  theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 1))
+  theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
 print(p2)
 ggsave(file.path(output_dir, "boxplot_day_of_week.png"), p2, width = 7, height = 5)
 
@@ -56,7 +56,7 @@ p3 <- ggplot(df, aes(x = holiday_label, y = traffic_volume, fill = holiday_label
   labs(title = "Traffic Volume: Holiday vs. Non-Holiday",
        x = "", y = "Traffic Volume (vehicles/hr)") +
   theme_minimal() +
-  theme(legend.position = "none")
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
 print(p3)
 ggsave(file.path(output_dir, "boxplot_holiday.png"), p3, width = 6, height = 5)
 
@@ -71,10 +71,9 @@ p4 <- ggplot(hourly_avg, aes(x = hour, y = avg_traffic)) +
   geom_point(color = "#2166AC") +
   scale_x_continuous(breaks = 0:23) +
   labs(title = "Average Traffic Volume by Hour of Day",
-       subtitle = "Morning peak ~6-7am, afternoon peak ~4-5pm",
        x = "Hour (24h, local CST)", y = "Average Traffic Volume (vehicles/hr)") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 0, size = 8))
+  theme(axis.text.x = element_text(angle = 0, size = 8), plot.title = element_text(hjust = 0.5))
 print(p4)
 ggsave(file.path(output_dir, "line_avg_traffic_by_hour.png"), p4, width = 8, height = 5)
 
@@ -97,7 +96,7 @@ p7 <- ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
   labs(title = "Correlation Heatmap of Numeric Variables",
        x = "", y = "") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(hjust = 0.5))
 
 print(p7)
 ggsave(file.path(output_dir, "correlation_heatmap.png"), p7, width = 7, height = 6)
