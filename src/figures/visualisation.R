@@ -35,7 +35,7 @@ p1 <- ggplot(df, aes(x = traffic_volume)) +
   theme_minimal() +
   theme(plot.title = element_text(hjust = 0.5))
 print(p1)
-ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height = 5)
+ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height = 5, dpi = 300)
 
 
 # ---- 2. Boxplot of traffic volume by day of week ----
@@ -47,7 +47,7 @@ p2 <- ggplot(df, aes(x = day_of_week, y = traffic_volume, fill = day_of_week)) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 30, hjust = 1),
         plot.title = element_text(hjust = 0.5))
 print(p2)
-ggsave(file.path(output_dir, "boxplot_day_of_week.png"), p2, width = 7, height = 5)
+ggsave(file.path(output_dir, "boxplot_day_of_week.png"), p2, width = 7, height = 5, dpi = 300)
 
 
 # ---- 3. Boxplot of traffic volume by holiday status ----
@@ -58,7 +58,7 @@ p3 <- ggplot(df, aes(x = holiday_label, y = traffic_volume, fill = holiday_label
   theme_minimal() +
   theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
 print(p3)
-ggsave(file.path(output_dir, "boxplot_holiday.png"), p3, width = 6, height = 5)
+ggsave(file.path(output_dir, "boxplot_holiday.png"), p3, width = 6, height = 5, dpi = 300)
 
 
 # ---- 4. Average traffic volume by hour of day ----
@@ -75,7 +75,7 @@ p4 <- ggplot(hourly_avg, aes(x = hour, y = avg_traffic)) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 0, size = 8), plot.title = element_text(hjust = 0.5))
 print(p4)
-ggsave(file.path(output_dir, "line_avg_traffic_by_hour.png"), p4, width = 8, height = 5)
+ggsave(file.path(output_dir, "line_avg_traffic_by_hour.png"), p4, width = 8, height = 5, dpi = 300)
 
 
 # ---- 5. Correlation heatmap (numeric variables only) ----
@@ -99,7 +99,7 @@ p7 <- ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(hjust = 0.5))
 
 print(p7)
-ggsave(file.path(output_dir, "correlation_heatmap.png"), p7, width = 7, height = 6)
+ggsave(file.path(output_dir, "correlation_heatmap.png"), p7, width = 7, height = 6, dpi = 300)
 
 cat("\nAll figures saved to '", output_dir, "/':\n", sep = "")
 cat(" - hist_traffic_volume.png\n")
