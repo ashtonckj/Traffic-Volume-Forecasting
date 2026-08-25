@@ -170,7 +170,7 @@ weather_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all")
 for (col in weather_cols) {
   vals <- na.approx(df[[col]], x = as.numeric(df$date_time), na.rm = FALSE)
   vals[df$gap_length > LONG_MAX] <- NA
-  df[[col]] <- vals
+  df[[col]] <- round(vals, 2)
 }
 
 # --- traffic_volume: tiered fill ---
@@ -179,7 +179,7 @@ medium_idx <- df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX
 tv[medium_idx] <- lag(tv, 168)[medium_idx]        # 3h-24h gaps: same hour, previous week
 tv <- na.approx(tv, x = as.numeric(df$date_time), na.rm = FALSE)  # fills remaining <=2h gaps
 tv[df$gap_length > LONG_MAX] <- NA                # re-mask the 92h gap (na.approx would bridge it)
-df$traffic_volume <- tv
+df$traffic_volume <- round(tv, 0)
 
 n_short <- sum(df$gap_length > 0 & df$gap_length <= SHORT_MAX)
 n_medium <- sum(df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX)
