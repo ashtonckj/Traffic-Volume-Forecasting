@@ -6,13 +6,6 @@
 #   - Recommended differencing orders (regular d, seasonal D at 24h and 168h)
 #   - Ljung-Box test for residual/series autocorrelation (original + differenced)
 #   - An STL decomposition plot (trend / seasonal / remainder)
-# All figures are saved as PNG; all numeric results are saved as one JSON file.
-#
-# Intended to run AFTER preprocessing.R, on the same processed CSV used by
-# visualisation.R. These diagnostics are what justify (i) whether the series
-# needs differencing before SARIMA, and (ii) what seasonal period(s) and
-# AR/MA orders are appropriate -- feeds directly into Section III / the
-# SARIMA teammate's model-fitting step.
 # ============================================================
 
 library(dplyr)
@@ -70,9 +63,9 @@ run_stationarity_tests <- function(x, label) {
     adf = list(statistic = unname(adf$statistic), p_value = adf$p.value,
                stationary = adf$p.value < 0.05),
     kpss_level = list(statistic = unname(kpss_level$statistic), p_value = kpss_level$p.value,
-                       stationary = kpss_level$p.value >= 0.05),
+                      stationary = kpss_level$p.value >= 0.05),
     kpss_trend = list(statistic = unname(kpss_trend$statistic), p_value = kpss_trend$p.value,
-                       stationary = kpss_trend$p.value >= 0.05)
+                      stationary = kpss_trend$p.value >= 0.05)
   )
 }
 
@@ -119,7 +112,7 @@ save_acf_pacf(tv_ts_daily, max_lag = 200, filename_prefix = "original",
 
 stationarity_original <- run_stationarity_tests(df$traffic_volume, "ORIGINAL series")
 ljung_original <- run_ljung_box(df$traffic_volume, lags = c(24, 48, 168),
-                                 fitdf = 0, label = "original")
+                                fitdf = 0, label = "original")
 
 results$original <- list(
   stationarity = stationarity_original,
