@@ -129,13 +129,79 @@ cat("Removed", n_before - nrow(df), "rows before", format(CUTOFF_DATE),
     "(", nrow(df), "rows )", "\n")
 
 
-# ---- 10. Calendar-derived features (deterministic, safe for forecasting) ----
+# ---- 10. Fill remaining internal hourly gaps ----
+# Restricting the date range (step 9) removed the one giant 10-month hole,
+# but 1,898 individual hours are still missing throughout the retained
+# window (sensor/logging downtime), ranging from single-hour gaps up to one
+# 92-hour (~3.8 day) gap. Reindex to a complete hourly grid, then fill based
+# on gap length:
+#   <=2h   : linear interpolation (all numeric columns)
+#   3h-24h : weather -> linear interpolation
+#            traffic_volume -> same hour, previous week (t-168), since a
+#            straight line would flatten out the hour-of-day/day-of-week
+#            structure that actually matters for this variable
+#   >24h   : left as NA and dropped -- the single 92h gap is too long to
+#            responsibly reconstruct either way
+# is_holiday is looked up by calendar date (via holiday_lookup from step 6),
+# never interpolated -- it's a binary flag, not a continuous quantity.
+
+SHORT_MAX <- 2   # hours
+LONG_MAX <- 24   # hours
+
+full_grid <- data.frame(date_time = seq(min(df$date_time), max(df$date_time), by = "hour"))
+n_missing_before <- nrow(full_grid) - nrow(df)
+
+df <- full_grid %>%
+  left_join(df, by = "date_time") %>%
+  arrange(date_time)
+
+# Re-derive is_holiday for newly-inserted rows from the calendar date
+df$cal_date <- as.Date(df$date_time)
+df$is_holiday <- ifelse(df$cal_date %in% holiday_lookup$cal_date, 1L, 0L)
+df$cal_date <- NULL
+
+# Length (in hours) of the missing run each row belongs to; 0 for observed rows
+run <- rle(is.na(df$traffic_volume))
+gap_length <- rep(run$lengths, run$lengths)
+df$gap_length <- ifelse(is.na(df$traffic_volume), gap_length, 0)
+
+# --- Weather: linear interpolation for gaps <= LONG_MAX ---
+weather_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all")
+for (col in weather_cols) {
+  vals <- na.approx(df[[col]], x = as.numeric(df$date_time), na.rm = FALSE)
+  vals[df$gap_length > LONG_MAX] <- NA
+  df[[col]] <- vals
+}
+
+# --- traffic_volume: tiered fill ---
+tv <- df$traffic_volume
+medium_idx <- df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX
+tv[medium_idx] <- lag(tv, 168)[medium_idx]        # 3h-24h gaps: same hour, previous week
+tv <- na.approx(tv, x = as.numeric(df$date_time), na.rm = FALSE)  # fills remaining <=2h gaps
+tv[df$gap_length > LONG_MAX] <- NA                # re-mask the 92h gap (na.approx would bridge it)
+df$traffic_volume <- tv
+
+n_short <- sum(df$gap_length > 0 & df$gap_length <= SHORT_MAX)
+n_medium <- sum(df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX)
+n_long <- sum(df$gap_length > LONG_MAX)
+cat("Gap fill: ", n_short, " hour(s) interpolated, ", n_medium,
+    " hour(s) filled via t-168, ", n_long, " hour(s) left unfilled.\n", sep = "")
+
+df$gap_length <- NULL
+
+# Drop the rows from the one gap that was intentionally left unfilled
+n_before_drop <- nrow(df)
+df <- df %>% filter(!is.na(traffic_volume))
+cat("Dropped", n_before_drop - nrow(df), "row(s) from gap(s) longer than", LONG_MAX, "hours.\n")
+
+
+# ---- 11. Calendar-derived features (deterministic, safe for forecasting) ----
 df$hour <- hour(df$date_time)
 df$month <- month(df$date_time)
 df$day_of_week <- wday(df$date_time, label = TRUE, abbr = FALSE)
 
 
-# ---- 11. Keep only the finalized set of columns ----
+# ---- 12. Keep only the finalized set of columns ----
 # weather_main and the raw holiday name are dropped here; is_holiday already
 # captures the information needed for modeling, and weather_main was already
 # excluded from forecasting inputs per the group report (Section II-C3).
@@ -143,7 +209,7 @@ df <- df %>%
   select(date_time, temp, rain_1h, snow_1h, clouds_all, is_holiday, hour, month, day_of_week, traffic_volume)
 
 
-# ---- 12. Force a consistent date_time string before writing ----
+# ---- 13. Force a consistent date_time string before writing ----
 # write.csv() on a POSIXct column silently drops "00:00:00" for any row that
 # falls exactly at midnight, while keeping the full timestamp on every other
 # row - this is a documented R quirk (format.POSIXct() decides the time
@@ -152,7 +218,7 @@ df <- df %>%
 df$date_time <- format(df$date_time, "%Y-%m-%d %H:%M:%S")
 
 
-# ---- 13. Save processed dataset ----
+# ---- 14. Save processed dataset ----
 write.csv(df, output_path, row.names = FALSE)
 cat("\nSaved processed dataset to:", output_path, "\n")
 cat("Final dimensions:", nrow(df), "rows x", ncol(df), "columns\n")
