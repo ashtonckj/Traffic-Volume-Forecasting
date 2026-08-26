@@ -133,15 +133,23 @@ cat("Removed", n_before - nrow(df), "rows before", format(CUTOFF_DATE),
 # Restricting the date range (step 9) removed the one giant 10-month hole,
 # but 1,898 individual hours are still missing throughout the retained
 # window (sensor/logging downtime), ranging from single-hour gaps up to one
-# 92-hour (~3.8 day) gap. Reindex to a complete hourly grid, then fill based
-# on gap length:
+# 92-hour (~3.8 day) gap, which is fully continuous. Reindex to a complete
+# hourly grid, then fill based on gap length:
 #   <=2h   : linear interpolation (all numeric columns)
 #   3h-24h : weather -> linear interpolation
 #            traffic_volume -> same hour, previous week (t-168), since a
 #            straight line would flatten out the hour-of-day/day-of-week
 #            structure that actually matters for this variable
-#   >24h   : left as NA and dropped -- the single 92h gap is too long to
-#            responsibly reconstruct either way
+#   >24h   : weather -> linear interpolation
+#            traffic_volume -> seasonal-naive substitution: average the
+#            same hour-of-week across several surrounding weeks (both
+#            before and after the gap), rather than a single t-168 lag,
+#            so one atypical reference week (a holiday, a storm) doesn't
+#            bias the whole 92-hour fill. This preserves the hour-of-day/
+#            day-of-week structure a straight line would otherwise erase
+#            over ~4 days, and keeps the hourly grid row-for-row complete
+#            (no rows dropped, so hour-of-day alignment for auto.arima's
+#            seasonal index is never shifted downstream of the gap).
 # is_holiday is looked up by calendar date (via holiday_lookup from step 6),
 # never interpolated -- it's a binary flag, not a continuous quantity.
 
@@ -165,11 +173,12 @@ run <- rle(is.na(df$traffic_volume))
 gap_length <- rep(run$lengths, run$lengths)
 df$gap_length <- ifelse(is.na(df$traffic_volume), gap_length, 0)
 
-# --- Weather: linear interpolation for gaps <= LONG_MAX ---
+# --- Weather: linear interpolation for ALL gap lengths (weather doesn't
+# have traffic's strong weekly seasonality, so a straight-line fill across
+# even the 92h gap is a reasonable approximation) ---
 weather_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all")
 for (col in weather_cols) {
   vals <- na.approx(df[[col]], x = as.numeric(df$date_time), na.rm = FALSE)
-  vals[df$gap_length > LONG_MAX] <- NA
   df[[col]] <- round(vals, 2)
 }
 
@@ -178,21 +187,40 @@ tv <- df$traffic_volume
 medium_idx <- df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX
 tv[medium_idx] <- lag(tv, 168)[medium_idx]        # 3h-24h gaps: same hour, previous week
 tv <- na.approx(tv, x = as.numeric(df$date_time), na.rm = FALSE)  # fills remaining <=2h gaps
-tv[df$gap_length > LONG_MAX] <- NA                # re-mask the 92h gap (na.approx would bridge it)
+tv[df$gap_length > LONG_MAX] <- NA                # re-mask long gap(s) (na.approx would bridge them)
+
+# Long gaps (> LONG_MAX): seasonal-naive substitution. For each missing
+# hour, average the same hour-of-week (t +/- k*168) across n_weeks weeks
+# on both sides of the gap, skipping any reference points that are
+# themselves missing or out of bounds.
+long_idx <- which(df$gap_length > LONG_MAX)
+
+get_seasonal_avg <- function(i, n_weeks = 4) {
+  offsets <- c(-n_weeks:-1, 1:n_weeks) * 168L
+  candidate_idx <- i + offsets
+  candidate_idx <- candidate_idx[candidate_idx >= 1 & candidate_idx <= length(tv)]
+  vals <- tv[candidate_idx]
+  vals <- vals[!is.na(vals)]
+  if (length(vals) == 0) return(NA_real_)  # only possible if gap sits near series edge
+  mean(vals)
+}
+
+tv[long_idx] <- sapply(long_idx, get_seasonal_avg)
 df$traffic_volume <- round(tv, 0)
 
 n_short <- sum(df$gap_length > 0 & df$gap_length <= SHORT_MAX)
 n_medium <- sum(df$gap_length > SHORT_MAX & df$gap_length <= LONG_MAX)
-n_long <- sum(df$gap_length > LONG_MAX)
+n_long <- length(long_idx)
+n_long_unresolved <- sum(is.na(df$traffic_volume[long_idx]))
 cat("Gap fill: ", n_short, " hour(s) interpolated, ", n_medium,
-    " hour(s) filled via t-168, ", n_long, " hour(s) left unfilled.\n", sep = "")
+    " hour(s) filled via t-168, ", n_long,
+    " hour(s) filled via seasonal-naive averaging (", n_long_unresolved,
+    " unresolved).\n", sep = "")
 
 df$gap_length <- NULL
 
-# Drop the rows from the one gap that was intentionally left unfilled
-n_before_drop <- nrow(df)
-df <- df %>% filter(!is.na(traffic_volume))
-cat("Dropped", n_before_drop - nrow(df), "row(s) from gap(s) longer than", LONG_MAX, "hours.\n")
+# No rows dropped -- the hourly grid stays complete row-for-row, which
+# SARIMA.R's Step 3 guard checks for.
 
 
 # ---- 11. Calendar-derived features (deterministic, safe for forecasting) ----
