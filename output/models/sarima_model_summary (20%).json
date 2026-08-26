@@ -1,0 +1,43 @@
+{
+  "model": {
+    "order": {
+      "p": 2,
+      "d": 0,
+      "q": 1
+    },
+    "seasonal_order": {
+      "P": 2,
+      "D": 0,
+      "Q": 1,
+      "s": 24
+    },
+    "fourier_K": 12,
+    "AIC": 310844.8019,
+    "AICc": 310844.8963,
+    "BIC": 311091.3859,
+    "log_likelihood": -155391.4009
+  },
+  "stationarity": {
+    "ADF_pvalue": 0.01,
+    "KPSS_pvalue": 0.1,
+    "d_order": 0,
+    "D_order": 0
+  },
+  "residual_tests": {
+    "Ljung_Box_p": 0,
+    "Shapiro_Wilk_p": 0
+  },
+  "accuracy": {
+    "ME": 54.839,
+    "RMSE": 909.046,
+    "MAE": 619.9913,
+    "MAPE": 30.5532,
+    "sMAPE": 22.8305,
+    "MASE": 1.0898
+  },
+  "split": {
+    "train_n": 21043,
+    "test_h": 5261,
+    "season": 24
+  }
+}
