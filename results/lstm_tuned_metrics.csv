@@ -1,0 +1,2 @@
+"Model","look_back","lstm_units","dropout_rate","learning_rate","batch_size","MAE","MSE","RMSE","MAPE"
+"LSTM (tuned)",168,64,0.2,0.001,64,169.11,64886.11,254.73,"7.14%"
