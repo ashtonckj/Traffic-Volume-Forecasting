@@ -1,0 +1,16 @@
+{
+  "ADF": {
+    "statistic": -18.6437,
+    "p_value": 0.01
+  },
+  "KPSS": {
+    "statistic": 0.3653,
+    "p_value": 0.0921
+  },
+  "PP": {
+    "statistic": -2075.3424,
+    "p_value": 0.01
+  },
+  "ndiffs": 0,
+  "nsdiffs": 1
+}

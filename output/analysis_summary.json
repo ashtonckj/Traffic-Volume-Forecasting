@@ -1,0 +1,26 @@
+{
+  "dataset": {
+    "rows": 26304,
+    "columns": 17,
+    "date_start": "2015-10-01",
+    "date_end": "2018-09-30 23:00:00",
+    "holiday_hrs": 768,
+    "weekend_hrs": 7536
+  },
+  "traffic_volume": {
+    "mean": 3307.36,
+    "median": 3499.5,
+    "sd": 1963.56,
+    "min": 0,
+    "max": 7280,
+    "skewness": -0.1409,
+    "kurtosis": 1.7094
+  },
+  "stationarity": {
+    "ADF_p": 0.01,
+    "KPSS_p": 0.0921,
+    "PP_p": 0.01,
+    "d": 0,
+    "D": 1
+  }
+}
