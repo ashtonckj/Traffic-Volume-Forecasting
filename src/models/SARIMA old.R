@@ -1,423 +1,361 @@
 # ============================================================
-#  Metro Interstate Traffic Volume — Statistical Analysis
-#  Input : data/processed/traffic_volume_processed.csv
-#  Output: output/  (plots + diagnostics + summary)
+#  Metro Interstate Traffic Volume – Statistical Analysis
+#  Preprocessing & Exploratory Analysis for SARIMA Modeling
 # ============================================================
-#  Columns in processed dataset:
-#    date_time, temp, rain_1h, snow_1h, clouds_all,
-#    is_holiday, hour, month, day_of_week, traffic_volume
-# ============================================================
+# Dataset: https://archive.ics.uci.edu/dataset/492/metro+interstate+traffic+volume
+# Requires: tidyverse, lubridate, forecast, tseries, ggplot2, zoo, moments
 
-# ── 0. Packages ──────────────────────────────────────────────
-pkgs <- c("dplyr", "lubridate", "forecast", "tseries",
-          "ggplot2", "zoo", "moments", "scales", "gridExtra",
-          "jsonlite")
-new  <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
-if (length(new)) install.packages(new, dependencies = TRUE)
+# ── 0. Install / Load Packages ───────────────────────────────
+pkgs <- c("tidyverse", "lubridate", "forecast", "tseries",
+          "ggplot2", "zoo", "moments", "scales", "gridExtra")
+installed <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
+if (length(installed)) install.packages(installed, dependencies = TRUE)
 invisible(lapply(pkgs, library, character.only = TRUE))
-cat("Packages loaded.\n")
+
+cat("✔ Packages loaded\n")
 
 
-# ── 1. Paths ─────────────────────────────────────────────────
-input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output"
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+# ── 1. Load Data ─────────────────────────────────────────────
+# Place the CSV in your working directory, or adjust the path below.
+# Download from: https://archive.ics.uci.edu/dataset/492/metro+interstate+traffic+volume
+df_raw <- read.csv("Metro_Interstate_Traffic_Volume.csv", stringsAsFactors = FALSE)
+
+cat("✔ Raw data loaded:", nrow(df_raw), "rows ×", ncol(df_raw), "columns\n")
+cat("\n── Column Names ──\n")
+print(names(df_raw))
+cat("\n── Head ──\n")
+print(head(df_raw))
 
 
-# ── 2. Load Processed Data ───────────────────────────────────
-df <- read.csv(input_path, stringsAsFactors = FALSE)
+# ── 2. Preprocessing ─────────────────────────────────────────
 
-df$date_time <- as.POSIXct(df$date_time,
-                           format = "%Y-%m-%d %H:%M:%S",
-                           tz     = "UTC")
-
-df <- df %>% arrange(date_time)
-
-cat("Loaded:", nrow(df), "rows |",
-    "Range:", as.character(min(df$date_time)), "to",
-    as.character(max(df$date_time)), "\n")
-cat("Columns:", paste(names(df), collapse = ", "), "\n")
-
-
-# ── 3. Derive Additional Features ────────────────────────────
-# day_of_week is already in the processed data as a character
-# label. Re-derive numeric versions and is_weekend here so
-# all EDA plots have consistent grouping variables.
-df <- df %>%
+## 2a. Parse datetime
+df <- df_raw %>%
   mutate(
-    year       = year(date_time),
-    month_lbl  = month(date_time, label = TRUE, abbr = TRUE),
-    dow_lbl    = wday(date_time, label = TRUE, abbr = TRUE),
-    dow_num    = wday(date_time),               # 1 = Sun … 7 = Sat
-    is_weekend = ifelse(dow_num %in% c(1, 7), 1L, 0L),
-    day_type   = ifelse(is_weekend == 1, "Weekend", "Weekday"),
-    temp_C     = temp - 273.15                  # Kelvin -> Celsius
+    date_time = as.POSIXct(date_time, format = "%Y-%m-%d %H:%M:%S", tz = "America/Chicago"),
+    hour      = hour(date_time),
+    day_of_week = wday(date_time, label = TRUE, abbr = TRUE),
+    month     = month(date_time, label = TRUE, abbr = TRUE),
+    year      = year(date_time),
+    is_weekend = ifelse(wday(date_time) %in% c(1, 7), 1, 0),
+    is_holiday = ifelse(holiday != "None", 1, 0)
   )
 
-cat("Feature derivation complete.\n")
+## 2b. Check for duplicates
+n_dupes <- sum(duplicated(df$date_time))
+cat("\n── Duplicated timestamps:", n_dupes, "──\n")
+if (n_dupes > 0) {
+  df <- df %>%
+    arrange(date_time) %>%
+    group_by(date_time) %>%
+    summarise(
+      traffic_volume = mean(traffic_volume, na.rm = TRUE),
+      temp           = mean(temp, na.rm = TRUE),
+      rain_1h        = mean(rain_1h, na.rm = TRUE),
+      snow_1h        = mean(snow_1h, na.rm = TRUE),
+      clouds_all     = mean(clouds_all, na.rm = TRUE),
+      is_holiday     = max(is_holiday),
+      is_weekend     = max(is_weekend),
+      hour           = first(hour),
+      day_of_week    = first(day_of_week),
+      month          = first(month),
+      year           = first(year),
+      .groups = "drop"
+    )
+  cat("   → Duplicates removed by averaging. Rows now:", nrow(df), "\n")
+}
+
+## 2c. Create a complete hourly time grid & detect gaps
+full_grid <- data.frame(
+  date_time = seq(min(df$date_time), max(df$date_time), by = "hour")
+)
+df_complete <- full_grid %>%
+  left_join(df, by = "date_time")
+
+n_missing_ts <- sum(is.na(df_complete$traffic_volume))
+cat("\n── Missing hourly slots after completing grid:", n_missing_ts, "──\n")
+
+## 2d. Fill gaps with linear interpolation
+df_complete <- df_complete %>%
+  mutate(
+    traffic_volume = na.approx(traffic_volume, na.rm = FALSE),
+    temp           = na.approx(temp,           na.rm = FALSE),
+    rain_1h        = na.approx(rain_1h,        na.rm = FALSE),
+    snow_1h        = na.approx(snow_1h,        na.rm = FALSE),
+    clouds_all     = na.approx(clouds_all,     na.rm = FALSE)
+  )
+
+## 2e. Re-derive time features on the complete grid
+df_complete <- df_complete %>%
+  mutate(
+    hour        = hour(date_time),
+    day_of_week = wday(date_time, label = TRUE, abbr = TRUE),
+    month       = month(date_time, label = TRUE, abbr = TRUE),
+    year        = year(date_time),
+    is_weekend  = ifelse(wday(date_time) %in% c(1, 7), 1, 0)
+  )
+
+## 2f. Temperature conversion (Kelvin → Celsius) & outlier flag
+df_complete <- df_complete %>%
+  mutate(
+    temp_C        = temp - 273.15,
+    temp_outlier  = ifelse(temp_C < -50 | temp_C > 50, 1, 0)
+  )
+cat("── Temperature outliers flagged:", sum(df_complete$temp_outlier, na.rm = TRUE), "\n")
+
+# Replace temperature outliers with interpolated values
+if (sum(df_complete$temp_outlier, na.rm = TRUE) > 0) {
+  df_complete$temp_C[df_complete$temp_outlier == 1] <- NA
+  df_complete$temp_C <- na.approx(df_complete$temp_C, na.rm = FALSE)
+}
+
+cat("\n✔ Preprocessing complete. Rows:", nrow(df_complete), "\n")
 
 
-# ── 4. Descriptive Statistics ─────────────────────────────────
-cat("\n=============================================\n")
-cat("  DESCRIPTIVE STATISTICS — traffic_volume\n")
-cat("=============================================\n")
+# ── 3. Descriptive Statistics ─────────────────────────────────
+cat("\n═══════════════════════════════════════════\n")
+cat("  DESCRIPTIVE STATISTICS – traffic_volume\n")
+cat("═══════════════════════════════════════════\n")
 
-tv <- df$traffic_volume
-
+tv <- df_complete$traffic_volume
 stats_tbl <- data.frame(
-  Statistic = c(
-    "N", "Mean", "Median", "Std Dev",
-    "Min", "Max", "Q1 (25%)", "Q3 (75%)",
-    "IQR", "Skewness", "Kurtosis", "Missing (NAs)"
-  ),
+  Statistic = c("N", "Mean", "Median", "Std Dev", "Min", "Max",
+                "Q1 (25%)", "Q3 (75%)", "IQR", "Skewness", "Kurtosis",
+                "Missing (NAs)"),
   Value = c(
     length(tv),
-    round(mean(tv,                    na.rm = TRUE), 2),
-    round(median(tv,                  na.rm = TRUE), 2),
-    round(sd(tv,                      na.rm = TRUE), 2),
-    round(min(tv,                     na.rm = TRUE), 2),
-    round(max(tv,                     na.rm = TRUE), 2),
-    round(quantile(tv, 0.25,          na.rm = TRUE), 2),
-    round(quantile(tv, 0.75,          na.rm = TRUE), 2),
-    round(IQR(tv,                     na.rm = TRUE), 2),
-    round(skewness(tv,                na.rm = TRUE), 4),
-    round(kurtosis(tv,                na.rm = TRUE), 4),
+    round(mean(tv, na.rm = TRUE), 2),
+    round(median(tv, na.rm = TRUE), 2),
+    round(sd(tv, na.rm = TRUE), 2),
+    round(min(tv, na.rm = TRUE), 2),
+    round(max(tv, na.rm = TRUE), 2),
+    round(quantile(tv, 0.25, na.rm = TRUE), 2),
+    round(quantile(tv, 0.75, na.rm = TRUE), 2),
+    round(IQR(tv, na.rm = TRUE), 2),
+    round(skewness(tv, na.rm = TRUE), 4),
+    round(kurtosis(tv, na.rm = TRUE), 4),
     sum(is.na(tv))
   )
 )
-
 print(stats_tbl, row.names = FALSE)
 
-# Save to JSON for downstream use
-write(
-  toJSON(setNames(as.list(stats_tbl$Value), stats_tbl$Statistic),
-         pretty = TRUE, auto_unbox = TRUE),
-  file.path(output_dir, "descriptive_stats.json")
-)
-cat("Saved -> output/descriptive_stats.json\n")
+
+# ── 4. Stationarity Tests ────────────────────────────────────
+cat("\n═══════════════════════════════════════\n")
+cat("  STATIONARITY TESTS (on hourly series)\n")
+cat("═══════════════════════════════════════\n")
+
+# Use a subset for speed (first 5,000 observations)
+tv_sub <- na.omit(tv)[1:5000]
+
+# Augmented Dickey-Fuller
+adf_res <- adf.test(tv_sub, alternative = "stationary")
+cat("\n[ADF Test]\n")
+cat("  Statistic:", round(adf_res$statistic, 4), "\n")
+cat("  p-value  :", round(adf_res$p.value, 4),
+    ifelse(adf_res$p.value < 0.05, "→ STATIONARY ✔", "→ NON-STATIONARY ✗"), "\n")
+
+# KPSS Test
+kpss_res <- kpss.test(tv_sub)
+cat("\n[KPSS Test]\n")
+cat("  Statistic:", round(kpss_res$statistic, 4), "\n")
+cat("  p-value  :", round(kpss_res$p.value, 4),
+    ifelse(kpss_res$p.value > 0.05, "→ STATIONARY ✔", "→ NON-STATIONARY ✗"), "\n")
+
+# Phillips-Perron
+pp_res <- pp.test(tv_sub)
+cat("\n[Phillips-Perron Test]\n")
+cat("  Statistic:", round(pp_res$statistic, 4), "\n")
+cat("  p-value  :", round(pp_res$p.value, 4),
+    ifelse(pp_res$p.value < 0.05, "→ STATIONARY ✔", "→ NON-STATIONARY ✗"), "\n")
 
 
-# ── 5. Stationarity Tests ────────────────────────────────────
-cat("\n=============================================\n")
-cat("  STATIONARITY TESTS\n")
-cat("=============================================\n")
+# ── 5. ACF / PACF Analysis ──────────────────────────────────
+cat("\n[Seasonal Differencing & ndiffs / nsdiffs]\n")
 
-# Run on the full series — 26k observations is manageable for
-# ADF and KPSS; PP uses the full series too.
-tv_clean <- na.omit(tv)
-
-adf_res  <- adf.test(tv_clean, alternative = "stationary")
-kpss_res <- kpss.test(tv_clean)
-pp_res   <- pp.test(tv_clean)
-
-cat(sprintf("\nADF  : stat = %8.4f,  p = %.4f  (%s)\n",
-            adf_res$statistic,  adf_res$p.value,
-            ifelse(adf_res$p.value  < 0.05, "stationary", "non-stationary")))
-cat(sprintf("KPSS : stat = %8.4f,  p = %.4f  (%s)\n",
-            kpss_res$statistic, kpss_res$p.value,
-            ifelse(kpss_res$p.value > 0.05, "stationary", "non-stationary")))
-cat(sprintf("PP   : stat = %8.4f,  p = %.4f  (%s)\n",
-            pp_res$statistic,   pp_res$p.value,
-            ifelse(pp_res$p.value   < 0.05, "stationary", "non-stationary")))
-
-ts_for_diff <- ts(tv_clean, frequency = 24)
-d_val <- ndiffs(ts_for_diff)
-D_val <- nsdiffs(ts_for_diff)
-cat(sprintf("ndiffs (d) : %d\n", d_val))
-cat(sprintf("nsdiffs (D): %d  (s = 24)\n", D_val))
-
-# Save stationarity results
-stat_list <- list(
-  ADF  = list(statistic = round(adf_res$statistic,  4),
-              p_value   = round(adf_res$p.value,    4)),
-  KPSS = list(statistic = round(kpss_res$statistic, 4),
-              p_value   = round(kpss_res$p.value,   4)),
-  PP   = list(statistic = round(pp_res$statistic,   4),
-              p_value   = round(pp_res$p.value,     4)),
-  ndiffs  = d_val,
-  nsdiffs = D_val
-)
-write(toJSON(stat_list, pretty = TRUE, auto_unbox = TRUE),
-      file.path(output_dir, "stationarity_tests.json"))
-cat("Saved -> output/stationarity_tests.json\n")
+# Recommended differencing orders
+d_val  <- ndiffs(tv_sub)
+D_val  <- nsdiffs(ts(tv_sub, frequency = 24))
+cat("  Suggested d (non-seasonal):", d_val, "\n")
+cat("  Suggested D (seasonal, s=24):", D_val, "\n")
 
 
-# ── 6. ACF / PACF ────────────────────────────────────────────
-# Use a 5,000-observation window so the plots are readable;
-# the full 26k series produces an identical picture but slower.
-tv_sub <- tv_clean[1:min(5000, length(tv_clean))]
+# ── 6. Create ts Object ──────────────────────────────────────
+# Season = 24 (daily pattern) for hourly data
+# Adjust to 24*7 = 168 if you want weekly seasonality
+ts_hourly <- ts(df_complete$traffic_volume, frequency = 24)
 
-png(file.path(output_dir, "acf_pacf_original.png"),
-    width = 1200, height = 500, res = 130)
-par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-acf(tv_sub,  lag.max = 72,
-    main = "ACF — Traffic Volume (original)")
-pacf(tv_sub, lag.max = 72,
-     main = "PACF — Traffic Volume (original)")
-dev.off()
-cat("Saved -> output/acf_pacf_original.png\n")
-
-# Differenced series ACF/PACF (d=1 for illustration even if d=0
-# is suggested — useful to confirm the series is already stationary)
-tv_diff <- diff(tv_sub, differences = 1)
-
-png(file.path(output_dir, "acf_pacf_differenced.png"),
-    width = 1200, height = 500, res = 130)
-par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
-acf(tv_diff,  lag.max = 72,
-    main = "ACF — Traffic Volume (1st difference)")
-pacf(tv_diff, lag.max = 72,
-     main = "PACF — Traffic Volume (1st difference)")
-dev.off()
-cat("Saved -> output/acf_pacf_differenced.png\n")
+cat("\n✔ ts object created. Length:", length(ts_hourly),
+    " | Frequency:", frequency(ts_hourly), "\n")
 
 
-# ── 7. STL Decomposition ─────────────────────────────────────
-# Use 10 weeks of data so the plot is readable (s=24 daily cycle).
-stl_n   <- min(24 * 7 * 10, nrow(df))
-ts_stl  <- ts(df$traffic_volume[1:stl_n], frequency = 24)
-stl_fit <- stl(ts_stl, s.window = "periodic")
+# ── 7. Visualisations ────────────────────────────────────────
+cat("\n── Generating plots … ──\n")
 
-png(file.path(output_dir, "stl_decomposition.png"),
-    width = 1100, height = 750, res = 130)
-plot(stl_fit,
-     main = "STL Decomposition — Traffic Volume (s=24, first 10 weeks)")
-dev.off()
-cat("Saved -> output/stl_decomposition.png\n")
+## 7a. Full time-series overview
+p1 <- df_complete %>%
+  filter(!is.na(traffic_volume)) %>%
+  ggplot(aes(date_time, traffic_volume)) +
+  geom_line(colour = "#2c7fb8", linewidth = 0.3, alpha = 0.7) +
+  labs(title = "Hourly Traffic Volume – I-94 Westbound (2012–2018)",
+       x = "Date", y = "Traffic Volume (vehicles/hr)") +
+  scale_x_datetime(labels = date_format("%Y"), date_breaks = "1 year") +
+  theme_minimal(base_size = 11)
 
-
-# ── 8. EDA Plots ─────────────────────────────────────────────
-cat("\nGenerating EDA plots ...\n")
-
-# 8a. Full time-series line
-p1 <- ggplot(df, aes(date_time, traffic_volume)) +
-  geom_line(colour = "#2c7fb8", linewidth = 0.25, alpha = 0.7) +
-  labs(title = "Hourly Traffic Volume — I-94 Westbound (Oct 2015 – Sep 2018)",
-       x = "Date", y = "Traffic Volume (vehicles / hr)") +
-  scale_x_datetime(labels = date_format("%b %Y"),
-                   date_breaks = "6 months") +
-  theme_minimal(base_size = 10) +
-  theme(axis.text.x = element_text(angle = 30, hjust = 1))
-
-# 8b. Average by hour of day
-p2 <- df %>%
+## 7b. Average by hour of day
+p2 <- df_complete %>%
   group_by(hour) %>%
   summarise(avg_vol = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
   ggplot(aes(hour, avg_vol)) +
-  geom_line(colour = "#e34a33", linewidth = 1.1) +
+  geom_line(colour = "#e34a33", linewidth = 1.2) +
   geom_point(colour = "#e34a33", size = 2) +
-  scale_x_continuous(breaks = seq(0, 23, 2)) +
   labs(title = "Average Traffic by Hour of Day",
        x = "Hour (0–23)", y = "Mean Volume") +
-  theme_minimal(base_size = 10)
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal(base_size = 11)
 
-# 8c. Average by day of week (ordered Mon–Sun)
-dow_order <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-p3 <- df %>%
-  group_by(dow_lbl) %>%
+## 7c. Average by day of week
+p3 <- df_complete %>%
+  group_by(day_of_week) %>%
   summarise(avg_vol = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
-  mutate(dow_lbl = factor(dow_lbl, levels = dow_order)) %>%
-  ggplot(aes(dow_lbl, avg_vol, fill = dow_lbl)) +
+  ggplot(aes(day_of_week, avg_vol, fill = day_of_week)) +
   geom_col(show.legend = FALSE, alpha = 0.85) +
   labs(title = "Average Traffic by Day of Week",
        x = "Day", y = "Mean Volume") +
-  theme_minimal(base_size = 10)
+  theme_minimal(base_size = 11)
 
-# 8d. Average by month
-p4 <- df %>%
-  group_by(month_lbl) %>%
+## 7d. Average by month
+p4 <- df_complete %>%
+  group_by(month) %>%
   summarise(avg_vol = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
-  mutate(month_lbl = factor(month_lbl,
-                            levels = month.abb)) %>%
-  ggplot(aes(month_lbl, avg_vol, group = 1)) +
-  geom_line(colour = "#31a354", linewidth = 1.1) +
+  ggplot(aes(month, avg_vol, group = 1)) +
+  geom_line(colour = "#31a354", linewidth = 1.2) +
   geom_point(colour = "#31a354", size = 2.5) +
   labs(title = "Average Traffic by Month",
        x = "Month", y = "Mean Volume") +
-  theme_minimal(base_size = 10)
+  theme_minimal(base_size = 11)
 
-# 8e. Distribution histogram
-p5 <- ggplot(df, aes(traffic_volume)) +
-  geom_histogram(bins = 60, fill = "#756bb1",
-                 colour = "white", alpha = 0.85) +
+## 7e. Distribution / histogram
+p5 <- df_complete %>%
+  filter(!is.na(traffic_volume)) %>%
+  ggplot(aes(traffic_volume)) +
+  geom_histogram(bins = 60, fill = "#756bb1", colour = "white", alpha = 0.85) +
   labs(title = "Distribution of Hourly Traffic Volume",
-       x = "Traffic Volume (vehicles / hr)", y = "Count") +
-  theme_minimal(base_size = 10)
+       x = "Traffic Volume", y = "Count") +
+  theme_minimal(base_size = 11)
 
-# 8f. Weekday vs Weekend hourly profile
-p6 <- df %>%
+## 7f. Weekday vs Weekend
+p6 <- df_complete %>%
+  mutate(day_type = ifelse(is_weekend == 1, "Weekend", "Weekday")) %>%
   group_by(hour, day_type) %>%
   summarise(avg_vol = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
   ggplot(aes(hour, avg_vol, colour = day_type)) +
   geom_line(linewidth = 1.2) +
   geom_point(size = 1.8) +
-  scale_colour_manual(values = c("Weekday" = "#2c7fb8",
-                                 "Weekend" = "#e34a33")) +
-  scale_x_continuous(breaks = seq(0, 23, 2)) +
-  labs(title = "Weekday vs Weekend Hourly Profile",
+  labs(title = "Weekday vs Weekend Traffic Pattern",
        x = "Hour (0–23)", y = "Mean Volume", colour = NULL) +
-  theme_minimal(base_size = 10) +
+  scale_colour_manual(values = c("Weekday" = "#2c7fb8", "Weekend" = "#e34a33")) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  theme_minimal(base_size = 11) +
   theme(legend.position = "bottom")
 
-# 8g. Holiday vs Non-holiday hourly profile
-p7 <- df %>%
-  mutate(holiday_type = ifelse(is_holiday == 1, "Holiday", "Non-holiday")) %>%
-  group_by(hour, holiday_type) %>%
-  summarise(avg_vol = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(hour, avg_vol, colour = holiday_type)) +
-  geom_line(linewidth = 1.2) +
-  geom_point(size = 1.8) +
-  scale_colour_manual(values = c("Holiday"     = "#e34a33",
-                                 "Non-holiday" = "#2c7fb8")) +
-  scale_x_continuous(breaks = seq(0, 23, 2)) +
-  labs(title = "Holiday vs Non-Holiday Hourly Profile",
-       x = "Hour (0–23)", y = "Mean Volume", colour = NULL) +
-  theme_minimal(base_size = 10) +
-  theme(legend.position = "bottom")
+## Save combined plot
+grid_plot <- gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+ggsave("traffic_eda_plots.png", grid_plot, width = 14, height = 16, dpi = 150)
+cat("✔ EDA plot saved → traffic_eda_plots.png\n")
 
-# 8h. Temperature vs traffic scatter (sample 3,000 for speed)
-set.seed(42)
-df_samp <- df %>% slice_sample(n = min(3000, nrow(df)))
+## 7g. ACF & PACF plots (for SARIMA order identification)
+png("traffic_acf_pacf.png", width = 1200, height = 500, res = 120)
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+acf(tv_sub,  lag.max = 72, main = "ACF  – Traffic Volume (first 5000 obs)")
+pacf(tv_sub, lag.max = 72, main = "PACF – Traffic Volume (first 5000 obs)")
+dev.off()
+cat("✔ ACF/PACF plot saved → traffic_acf_pacf.png\n")
 
-p8 <- ggplot(df_samp, aes(temp_C, traffic_volume)) +
-  geom_point(alpha = 0.25, colour = "#2c7fb8", size = 0.8) +
-  geom_smooth(method = "loess", colour = "#e34a33",
-              se = FALSE, linewidth = 1) +
-  labs(title = "Temperature vs Traffic Volume",
-       x = "Temperature (°C)", y = "Traffic Volume (vehicles / hr)") +
-  theme_minimal(base_size = 10)
+## 7h. STL decomposition (captures daily & weekly seasonality)
+ts_week <- ts(df_complete$traffic_volume[1:(24*7*10)], frequency = 24)
+stl_fit <- stl(ts_week, s.window = "periodic")
 
-# Save 6-panel grid (core EDA)
-grid_core <- gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
-ggsave(file.path(output_dir, "eda_plots_core.png"),
-       grid_core, width = 14, height = 18, dpi = 150)
-cat("Saved -> output/eda_plots_core.png\n")
-
-# Save supplementary panel (holiday + temperature)
-grid_supp <- gridExtra::grid.arrange(p7, p8, ncol = 2)
-ggsave(file.path(output_dir, "eda_plots_supplementary.png"),
-       grid_supp, width = 14, height = 6, dpi = 150)
-cat("Saved -> output/eda_plots_supplementary.png\n")
+png("traffic_stl_decomposition.png", width = 1000, height = 700, res = 120)
+plot(stl_fit, main = "STL Decomposition – Traffic Volume (s=24, 10 weeks)")
+dev.off()
+cat("✔ STL decomposition plot saved → traffic_stl_decomposition.png\n")
 
 
-# ── 9. Boxplots ───────────────────────────────────────────────
-# 9a. Traffic by day of week
-bp1 <- df %>%
-  mutate(dow_lbl = factor(dow_lbl, levels = dow_order)) %>%
-  ggplot(aes(dow_lbl, traffic_volume, fill = dow_lbl)) +
-  geom_boxplot(show.legend = FALSE, outlier.size = 0.4,
-               outlier.alpha = 0.3, alpha = 0.8) +
-  labs(title = "Traffic Volume by Day of Week",
-       x = "Day", y = "Traffic Volume (vehicles / hr)") +
-  theme_minimal(base_size = 11)
+# ── 8. Auto SARIMA Identification (on subset for speed) ──────
+cat("\n── Auto SARIMA identification (subset: 2000 obs) ──\n")
+ts_sub2 <- ts(na.omit(df_complete$traffic_volume)[1:2000], frequency = 24)
 
-ggsave(file.path(output_dir, "boxplot_day_of_week.png"),
-       bp1, width = 10, height = 5, dpi = 150)
-cat("Saved -> output/boxplot_day_of_week.png\n")
-
-# 9b. Traffic by holiday flag
-bp2 <- df %>%
-  mutate(Holiday = ifelse(is_holiday == 1, "Holiday", "Non-holiday")) %>%
-  ggplot(aes(Holiday, traffic_volume, fill = Holiday)) +
-  geom_boxplot(show.legend = FALSE, outlier.size = 0.5,
-               outlier.alpha = 0.3, alpha = 0.8) +
-  scale_fill_manual(values = c("Holiday"     = "#e34a33",
-                               "Non-holiday" = "#2c7fb8")) +
-  labs(title = "Traffic Volume: Holiday vs Non-Holiday",
-       x = NULL, y = "Traffic Volume (vehicles / hr)") +
-  theme_minimal(base_size = 11)
-
-ggsave(file.path(output_dir, "boxplot_holiday.png"),
-       bp2, width = 7, height = 5, dpi = 150)
-cat("Saved -> output/boxplot_holiday.png\n")
-
-# 9c. Traffic by month (seasonal pattern)
-bp3 <- df %>%
-  mutate(month_lbl = factor(month_lbl, levels = month.abb)) %>%
-  ggplot(aes(month_lbl, traffic_volume, fill = month_lbl)) +
-  geom_boxplot(show.legend = FALSE, outlier.size = 0.4,
-               outlier.alpha = 0.3, alpha = 0.8) +
-  labs(title = "Traffic Volume by Month",
-       x = "Month", y = "Traffic Volume (vehicles / hr)") +
-  theme_minimal(base_size = 11)
-
-ggsave(file.path(output_dir, "boxplot_month.png"),
-       bp3, width = 12, height = 5, dpi = 150)
-cat("Saved -> output/boxplot_month.png\n")
-
-
-# ── 10. Correlation of Numeric Variables ─────────────────────
-num_cols <- c("traffic_volume", "temp_C", "rain_1h",
-              "snow_1h", "clouds_all", "is_holiday", "is_weekend")
-
-cor_mat  <- cor(df[, num_cols], use = "complete.obs")
-cor_df   <- as.data.frame(as.table(cor_mat))
-names(cor_df) <- c("Var1", "Var2", "Correlation")
-
-p_cor <- ggplot(cor_df, aes(Var1, Var2, fill = Correlation)) +
-  geom_tile(colour = "white") +
-  geom_text(aes(label = sprintf("%.2f", Correlation)),
-            size = 3.2, colour = "black") +
-  scale_fill_gradient2(low  = "#d73027", mid  = "white",
-                       high = "#1a9850", midpoint = 0,
-                       limits = c(-1, 1)) +
-  labs(title = "Correlation Heatmap — Numeric Variables",
-       x = NULL, y = NULL) +
-  theme_minimal(base_size = 10) +
-  theme(axis.text.x = element_text(angle = 35, hjust = 1))
-
-ggsave(file.path(output_dir, "correlation_heatmap.png"),
-       p_cor, width = 9, height = 8, dpi = 150)
-cat("Saved -> output/correlation_heatmap.png\n")
-
-
-# ── 11. Summary JSON ─────────────────────────────────────────
-summary_list <- list(
-  dataset = list(
-    rows        = nrow(df),
-    columns     = ncol(df),
-    date_start  = as.character(min(df$date_time)),
-    date_end    = as.character(max(df$date_time)),
-    holiday_hrs = sum(df$is_holiday),
-    weekend_hrs = sum(df$is_weekend)
-  ),
-  traffic_volume = list(
-    mean     = round(mean(tv,                 na.rm = TRUE), 2),
-    median   = round(median(tv,               na.rm = TRUE), 2),
-    sd       = round(sd(tv,                   na.rm = TRUE), 2),
-    min      = round(min(tv,                  na.rm = TRUE), 2),
-    max      = round(max(tv,                  na.rm = TRUE), 2),
-    skewness = round(skewness(tv,             na.rm = TRUE), 4),
-    kurtosis = round(kurtosis(tv,             na.rm = TRUE), 4)
-  ),
-  stationarity = list(
-    ADF_p  = round(adf_res$p.value,  4),
-    KPSS_p = round(kpss_res$p.value, 4),
-    PP_p   = round(pp_res$p.value,   4),
-    d      = d_val,
-    D      = D_val
-  )
+auto_model <- auto.arima(
+  ts_sub2,
+  seasonal    = TRUE,
+  stepwise    = TRUE,
+  approximation = TRUE,
+  trace       = TRUE
 )
+cat("\n✔ Best model identified:\n")
+print(summary(auto_model))
 
-write(toJSON(summary_list, pretty = TRUE, auto_unbox = TRUE),
-      file.path(output_dir, "analysis_summary.json"))
-cat("Saved -> output/analysis_summary.json\n")
+# Save model summary
+sink("auto_arima_summary.txt")
+cat("Auto ARIMA Model Summary\n")
+cat("========================\n\n")
+print(summary(auto_model))
+cat("\nAIC:", AIC(auto_model), "\n")
+cat("BIC:", BIC(auto_model), "\n")
+sink()
+cat("✔ Auto ARIMA summary saved → auto_arima_summary.txt\n")
 
 
-# ── 12. Done ─────────────────────────────────────────────────
-cat("\n=============================================\n")
-cat("  STATISTICAL ANALYSIS COMPLETE\n")
+# ── 9. Residual Diagnostics ───────────────────────────────────
+cat("\n── Residual Diagnostics ──\n")
+residuals_model <- residuals(auto_model)
+
+png("traffic_residual_diagnostics.png", width = 1100, height = 700, res = 120)
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(residuals_model, main = "Residuals over Time",
+     ylab = "Residual", xlab = "Time")
+abline(h = 0, col = "red", lty = 2)
+hist(residuals_model, breaks = 40, main = "Residual Distribution",
+     xlab = "Residual", col = "steelblue")
+acf(residuals_model,  lag.max = 48, main = "ACF of Residuals")
+pacf(residuals_model, lag.max = 48, main = "PACF of Residuals")
+dev.off()
+cat("✔ Residual diagnostics saved → traffic_residual_diagnostics.png\n")
+
+# Ljung-Box test on residuals
+lb_test <- Box.test(residuals_model, lag = 24, type = "Ljung-Box")
+cat("\n[Ljung-Box Test on Residuals (lag=24)]\n")
+cat("  Statistic:", round(lb_test$statistic, 4), "\n")
+cat("  p-value  :", round(lb_test$p.value, 4),
+    ifelse(lb_test$p.value > 0.05,
+           "→ Residuals are WHITE NOISE ✔",
+           "→ Residuals show autocorrelation ✗"), "\n")
+
+
+# ── 10. Forecast (next 48 hours) ─────────────────────────────
+cat("\n── Generating 48-hour forecast ──\n")
+fc <- forecast(auto_model, h = 48)
+
+png("traffic_forecast_48h.png", width = 1100, height = 500, res = 120)
+autoplot(fc) +
+  labs(title = "48-Hour Traffic Volume Forecast",
+       x = "Time (hours)", y = "Traffic Volume") +
+  theme_minimal(base_size = 11)
+dev.off()
+cat("✔ Forecast plot saved → traffic_forecast_48h.png\n")
+
+
+# ── 11. Session & Summary ─────────────────────────────────────
+cat("\n═══════════════════════════════════════════════════\n")
+cat("  ANALYSIS COMPLETE\n")
 cat("  Output files:\n")
-cat("    output/descriptive_stats.json\n")
-cat("    output/stationarity_tests.json\n")
-cat("    output/analysis_summary.json\n")
-cat("    output/acf_pacf_original.png\n")
-cat("    output/acf_pacf_differenced.png\n")
-cat("    output/stl_decomposition.png\n")
-cat("    output/eda_plots_core.png\n")
-cat("    output/eda_plots_supplementary.png\n")
-cat("    output/boxplot_day_of_week.png\n")
-cat("    output/boxplot_holiday.png\n")
-cat("    output/boxplot_month.png\n")
-cat("    output/correlation_heatmap.png\n")
-cat("=============================================\n")
+cat("    • traffic_eda_plots.png\n")
+cat("    • traffic_acf_pacf.png\n")
+cat("    • traffic_stl_decomposition.png\n")
+cat("    • traffic_residual_diagnostics.png\n")
+cat("    • traffic_forecast_48h.png\n")
+cat("    • auto_arima_summary.txt\n")
+cat("═══════════════════════════════════════════════════\n")
+cat("\n── R Session Info ──\n")
+print(sessionInfo())
