@@ -15,8 +15,8 @@ library(tseries)    # adf.test, kpss.test
 library(jsonlite)   # write_json
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
-fig_dir  <- "output/diagnostics"
-json_path <- "output/diagnostics/ts_diagnostics.json"
+fig_dir <- "output/time_series_diagnostics"
+json_path <- "output/time_series_diagnostics/ts_diagnostics.json"
 if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
 # ---- 0. Load processed data and build the time series object ----
