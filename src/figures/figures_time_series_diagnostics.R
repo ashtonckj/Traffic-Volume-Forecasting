@@ -90,14 +90,14 @@ save_acf_pacf <- function(x, max_lag, filename_prefix, title_suffix) {
     theme_minimal() +
     theme(plot.title = element_text(hjust = 0.5))
   ggsave(file.path(fig_dir, paste0("acf_", filename_prefix, ".png")),
-         p_acf, width = 8, height = 5, dpi = 300)
+         p_acf, width = 7, height = 2.8, dpi = 300)
 
   p_pacf <- ggPacf(x, lag.max = max_lag) +
     labs(title = paste("PACF -", title_suffix), x = "Lag (hours)", y = "PACF") +
     theme_minimal() +
     theme(plot.title = element_text(hjust = 0.5))
   ggsave(file.path(fig_dir, paste0("pacf_", filename_prefix, ".png")),
-         p_pacf, width = 8, height = 5, dpi = 300)
+         p_pacf, width = 7, height = 2.8, dpi = 300)
 }
 
 

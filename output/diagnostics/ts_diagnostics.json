@@ -1,5 +1,5 @@
 {
-  "n_obs": 26212,
+  "n_obs": 26304,
   "date_range": {
     "start": "2015-10-01",
     "end": "2018-09-30 23:00:00"
@@ -7,37 +7,37 @@
   "original": {
     "stationarity": {
       "adf": {
-        "statistic": -18.549035,
+        "statistic": -18.643661,
         "p_value": 0.01,
         "stationary": true
       },
       "kpss_level": {
-        "statistic": 0.348823,
-        "p_value": 0.099214,
+        "statistic": 0.365289,
+        "p_value": 0.092117,
         "stationary": true
       },
       "kpss_trend": {
-        "statistic": 0.163894,
-        "p_value": 0.035088,
+        "statistic": 0.160422,
+        "p_value": 0.037982,
         "stationary": false
       }
     },
     "ljung_box": [
       {
         "lag": 24,
-        "statistic": 155364.51814,
+        "statistic": 156066.151857,
         "p_value": 0,
         "autocorrelated": true
       },
       {
         "lag": 48,
-        "statistic": 291755.401958,
+        "statistic": 293177.089009,
         "p_value": 0,
         "autocorrelated": true
       },
       {
         "lag": 168,
-        "statistic": 967953.683774,
+        "statistic": 975856.041575,
         "p_value": 0,
         "autocorrelated": true
       }
@@ -51,40 +51,40 @@
   "differenced": {
     "d_applied": 0,
     "D_applied_24h": 0,
-    "n_obs_after_differencing": 26212,
+    "n_obs_after_differencing": 26304,
     "stationarity": {
       "adf": {
-        "statistic": -18.549035,
+        "statistic": -18.643661,
         "p_value": 0.01,
         "stationary": true
       },
       "kpss_level": {
-        "statistic": 0.348823,
-        "p_value": 0.099214,
+        "statistic": 0.365289,
+        "p_value": 0.092117,
         "stationary": true
       },
       "kpss_trend": {
-        "statistic": 0.163894,
-        "p_value": 0.035088,
+        "statistic": 0.160422,
+        "p_value": 0.037982,
         "stationary": false
       }
     },
     "ljung_box": [
       {
         "lag": 24,
-        "statistic": 155364.51814,
+        "statistic": 156066.151857,
         "p_value": 0,
         "autocorrelated": true
       },
       {
         "lag": 48,
-        "statistic": 291755.401958,
+        "statistic": 293177.089009,
         "p_value": 0,
         "autocorrelated": true
       },
       {
         "lag": 168,
-        "statistic": 967953.683774,
+        "statistic": 975856.041575,
         "p_value": 0,
         "autocorrelated": true
       }
@@ -92,6 +92,6 @@
   },
   "stl_decomposition": {
     "period_used": 24,
-    "approx_seasonal_strength_24h": 0.878441
+    "approx_seasonal_strength_24h": 0.878993
   }
 }
