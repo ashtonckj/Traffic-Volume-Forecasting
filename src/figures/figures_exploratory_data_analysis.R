@@ -27,18 +27,7 @@ df$day_of_week <- factor(
 df$holiday_label <- ifelse(df$is_holiday == 1, "Holiday", "No Holiday")
 
 
-# ---- 1. Histogram of traffic volume (shows multimodal daily pattern) ----
-p1 <- ggplot(df, aes(x = traffic_volume)) +
-  geom_histogram(binwidth = 200, fill = "#2166AC", color = "white") +
-  labs(title = "Distribution of Hourly Traffic Volume",
-       x = "Traffic Volume (vehicles/hr)", y = "Count") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5))
-print(p1)
-ggsave(file.path(output_dir, "hist_traffic_volume.png"), p1, width = 7, height = 5, dpi = 300)
-
-
-# ---- 2. Boxplot of traffic volume by day of week ----
+# ---- 1. Boxplot of traffic volume by day of week ----
 p2 <- ggplot(df, aes(x = day_of_week, y = traffic_volume, fill = day_of_week)) +
   geom_boxplot() +
   labs(title = "Traffic Volume by Day of Week",
@@ -50,7 +39,7 @@ print(p2)
 ggsave(file.path(output_dir, "boxplot_day_of_week.png"), p2, width = 7, height = 3, dpi = 300)
 
 
-# ---- 3. Boxplot of traffic volume by holiday status ----
+# ---- 2. Boxplot of traffic volume by holiday status ----
 p3 <- ggplot(df, aes(x = holiday_label, y = traffic_volume, fill = holiday_label)) +
   geom_boxplot() +
   labs(title = "Traffic Volume: Holiday vs. Non-Holiday",
@@ -61,7 +50,7 @@ print(p3)
 ggsave(file.path(output_dir, "boxplot_holiday.png"), p3, width = 7, height = 3, dpi = 300)
 
 
-# ---- 4. Average traffic volume by hour of day ----
+# ---- 3. Average traffic volume by hour of day ----
 hourly_avg <- df %>%
   group_by(hour) %>%
   summarise(avg_traffic = mean(traffic_volume, na.rm = TRUE), .groups = "drop")
@@ -78,7 +67,7 @@ print(p4)
 ggsave(file.path(output_dir, "line_avg_traffic_by_hour.png"), p4, width = 7, height = 3, dpi = 300)
 
 
-# ---- 5. Correlation heatmap (numeric variables only) ----
+# ---- 4. Correlation heatmap (numeric variables only) ----
 # Pulls out the numeric columns and computes pairwise correlation.
 numeric_df <- df %>% select(temp, rain_1h, snow_1h, clouds_all, traffic_volume)
 
