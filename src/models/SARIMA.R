@@ -29,7 +29,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 # ── 1. Paths ─────────────────────────────────────────────────
 input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output/models"
+output_dir <- "output/models/SARIMA"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 
@@ -326,7 +326,7 @@ acf(resid,  lag.max = 200, main = "ACF of Residuals (lag up to 200)")
 pacf(resid, lag.max = 200, main = "PACF of Residuals (lag up to 200)")
 
 dev.off()
-cat("Saved -> output/models/sarima_residual_diagnostics.png\n")
+cat("Saved -> output/models/SARIMA/sarima_residual_diagnostics.png\n")
 
 
 # ── 10. Forecast ─────────────────────────────────────────────
@@ -400,7 +400,7 @@ p_fc <- ggplot(fc_df, aes(x = date_time)) +
 
 ggsave(file.path(output_dir, "sarima_forecast_vs_actual.png"),
        p_fc, width = 14, height = 5, dpi = 150)
-cat("Saved -> output/models/sarima_forecast_vs_actual.png\n")
+cat("Saved -> output/models/SARIMA/sarima_forecast_vs_actual.png\n")
 
 
 # ── 13. First-Week Zoom Plot ─────────────────────────────────
@@ -424,7 +424,7 @@ p_zoom <- ggplot(fc_df[1:(24 * 7), ], aes(x = date_time)) +
 
 ggsave(file.path(output_dir, "sarima_forecast_week1_zoom.png"),
        p_zoom, width = 12, height = 4, dpi = 150)
-cat("Saved -> output/models/sarima_forecast_week1_zoom.png\n")
+cat("Saved -> output/models/SARIMA/sarima_forecast_week1_zoom.png\n")
 
 
 # ── 14. Save Forecast CSV ────────────────────────────────────
@@ -434,7 +434,7 @@ fc_out$date_time <- format(fc_out$date_time, "%Y-%m-%d %H:%M:%S")
 write.csv(fc_out,
           file.path(output_dir, "sarima_forecast_results.csv"),
           row.names = FALSE)
-cat("Saved -> output/models/sarima_forecast_results.csv\n")
+cat("Saved -> output/models/SARIMA/sarima_forecast_results.csv\n")
 
 
 # ── 15. Save Model Summary JSON ──────────────────────────────
@@ -485,13 +485,13 @@ summary_list <- list(
 
 write(toJSON(summary_list, pretty = TRUE, auto_unbox = TRUE),
       file.path(output_dir, "sarima_model_summary.json"))
-cat("Saved -> output/models/sarima_model_summary.json\n")
+cat("Saved -> output/models/SARIMA/sarima_model_summary.json\n")
 
 
 # ── 16. Save Model Object ────────────────────────────────────
 saveRDS(fit, file.path(output_dir, "sarima_model.rds"))
-cat("Saved -> output/models/sarima_model.rds\n")
-cat("(Reload later with: fit <- readRDS('output/models/sarima_model.rds'))\n")
+cat("Saved -> output/models/SARIMA/sarima_model.rds\n")
+cat("(Reload later with: fit <- readRDS('output/models/SARIMA/sarima_model.rds'))\n")
 
 
 # ── 17. Done ─────────────────────────────────────────────────
