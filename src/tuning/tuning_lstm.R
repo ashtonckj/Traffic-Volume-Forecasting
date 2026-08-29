@@ -1,14 +1,16 @@
 # ============================================================
 # Hyperparameter Tuning for LSTM Forecasting of Hourly Traffic Volume
-# Input: traffic_volume_processed.csv (output of preprocessing.R)
+# Input: data/processed/traffic_volume_processed.csv (output of preprocessing.R)
 #
-# Does a grid search over the LSTM's key tunable parameters, scores each
-# combination on the VALIDATION set (never the test set -- that stays
-# held out until the very end, same rule as lstm.R), then retrains the
-# best combination and reports final performance on the test set.
+# Grid-searches the LSTM's key tunable parameters, scores each combination
+# on the VALIDATION set (never the test set -- that stays held out until
+# the very end), and saves the search results plus a comparison figure.
+# The final tuned model itself (training curve, test metrics,
+# actual-vs-predicted) is built separately in lstm.R using the best
+# configuration found here.
 # ============================================================
-library(dplyr)
-library(lubridate)
+source("src/models/lstm_common.R")
+
 library(keras3)
 library(tensorflow)
 library(ggplot2)
@@ -16,129 +18,77 @@ library(ggplot2)
 set.seed(42)
 tensorflow::set_random_seed(42)
 
-# ---- 0. Paths ----
-input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "results"
-if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+if (!dir.exists(RESULTS_DIR)) dir.create(RESULTS_DIR, recursive = TRUE)
 
 
-# ---- 1. Load data (identical to lstm.R) ----
-df <- read.csv(input_path, stringsAsFactors = FALSE)
-df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
-df <- df %>% arrange(date_time)
+# ---- 1. Load data and engineer features ----
+df <- load_processed()
+df <- engineer_features(df)
 
 cat("Loaded", nrow(df), "rows spanning", as.character(min(df$date_time)),
     "to", as.character(max(df$date_time)), "\n")
 
-
-# ---- 2. Feature engineering (identical to lstm.R) ----
-weekday_order <- c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
-df$day_of_week_num <- match(df$day_of_week, weekday_order) - 1
-
-add_cyclical <- function(df, col, period) {
-  df[[paste0(col, "_sin")]] <- sin(2 * pi * df[[col]] / period)
-  df[[paste0(col, "_cos")]] <- cos(2 * pi * df[[col]] / period)
-  df
-}
-df <- add_cyclical(df, "hour", 24)
-df <- add_cyclical(df, "day_of_week_num", 7)
-df <- add_cyclical(df, "month", 12)
-
-feature_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all", "is_holiday",
-                  "hour_sin", "hour_cos",
-                  "day_of_week_num_sin", "day_of_week_num_cos",
-                  "month_sin", "month_cos",
-                  "traffic_volume")
-target_col <- "traffic_volume"
-
-model_df <- df[, feature_cols]
+model_df <- df[, FEATURE_COLS]
 
 
-# ---- 3. Chronological train / validation / test split (identical to lstm.R) ----
-# Date-based split: TEST is fixed to the final full calendar year so it
-# covers every month/holiday exactly once, instead of an arbitrary
-# percentage-based slice. See lstm.R for the full rationale.
-TRAIN_END <- as.POSIXct("2017-07-31 23:00:00", tz = "UTC")
-VAL_END   <- as.POSIXct("2017-09-30 23:00:00", tz = "UTC")
-# Test = everything after VAL_END (2017-10-01 to 2018-09-30)
+# ---- 2. Chronological train / validation / test split ----
+# Boundaries come from lstm_common.R so tuning, final training, and
+# forecasting cannot disagree about which rows are which.
+train_idx <- df$date_time <= TRAIN_END
+val_idx   <- df$date_time > TRAIN_END & df$date_time <= VAL_END
+test_idx  <- df$date_time > VAL_END
 
-train_raw <- model_df[df$date_time <= TRAIN_END, ]
-val_raw   <- model_df[df$date_time > TRAIN_END & df$date_time <= VAL_END, ]
-test_raw  <- model_df[df$date_time > VAL_END, ]
-
-cat("Train:", nrow(train_raw), " Val:", nrow(val_raw), " Test:", nrow(test_raw), "\n")
+cat("Train:", sum(train_idx), " Val:", sum(val_idx), " Test:", sum(test_idx), "\n")
 
 
-# ---- 4. Scaling (fitted on TRAIN ONLY, identical to lstm.R) ----
-scale_params <- lapply(train_raw, function(col) list(min = min(col), max = max(col)))
+# ---- 3. Scaling (fitted on TRAIN ONLY) ----
+# The whole frame is scaled in one pass with the training parameters, so the
+# context rows handed to make_sequences() are on the same scale as the split
+# they precede.
+scale_params <- fit_scaler(model_df[train_idx, ])
+scaled_all   <- apply_scale(model_df, scale_params)
 
-apply_scale <- function(data, params) {
-  scaled <- data
-  for (col in names(params)) {
-    rng <- params[[col]]$max - params[[col]]$min
-    if (rng == 0) rng <- 1
-    scaled[[col]] <- (data[[col]] - params[[col]]$min) / rng
-  }
-  scaled
-}
-
-train_scaled <- apply_scale(train_raw, scale_params)
-val_scaled   <- apply_scale(val_raw, scale_params)
-test_scaled  <- apply_scale(test_raw, scale_params)
-
-inverse_scale_target <- function(x, params, col = "traffic_volume") {
-  x * (params[[col]]$max - params[[col]]$min) + params[[col]]$min
-}
+train_scaled <- scaled_all[train_idx, ]
+val_scaled   <- scaled_all[val_idx, ]
 
 
-# ---- 5. Sliding-window sequence builder (identical to lstm.R) ----
-make_sequences <- function(data, look_back, target_col) {
-  x_mat <- as.matrix(data)
-  n_obs <- nrow(x_mat) - look_back
-  n_feat <- ncol(x_mat)
-
-  x_arr <- array(NA, dim = c(n_obs, look_back, n_feat))
-  y_vec <- numeric(n_obs)
-
-  for (i in 1:n_obs) {
-    x_arr[i, , ] <- x_mat[i:(i + look_back - 1), ]
-    y_vec[i] <- x_mat[i + look_back, target_col]
-  }
-  list(x = x_arr, y = y_vec)
-}
-
-
-# ---- 6. Define the search grid ----
-# Keep this modest -- each row trains a full model. Expand once you've
-# confirmed the script runs end-to-end on your machine.
+# ---- 4. Define the search grid ----
+# Each row trains a full model, so the grid is kept deliberately small.
+# look_back is the parameter of real interest: 24 asks whether one day of
+# history is enough, 168 whether the model needs a full week to see the
+# weekday/weekend contrast.
 grid <- expand.grid(
-  look_back    = c(24, 168),
-  lstm_units   = c(32, 64),
-  dropout_rate = c(0.2, 0.3),
+  look_back     = c(24, 168),
+  lstm_units    = c(32, 64),
+  dropout_rate  = c(0.2, 0.3),
   learning_rate = c(0.001),
-  batch_size   = c(64),
+  batch_size    = c(64),
   stringsAsFactors = FALSE
 )
 
 cat("\nSearching", nrow(grid), "hyperparameter combinations...\n")
 print(grid)
 
-# Cache: sequences depend only on look_back, so build each look_back's
-# sequences once and reuse them across the other hyperparameters.
+# Sequences depend only on look_back, so build each look_back's sequences
+# once and reuse them across the other hyperparameters.
 seq_cache <- list()
 get_sequences <- function(look_back) {
   key <- as.character(look_back)
   if (is.null(seq_cache[[key]])) {
     seq_cache[[key]] <<- list(
-      train = make_sequences(train_scaled, look_back, target_col),
-      val   = make_sequences(val_scaled,   look_back, target_col)
+      train = make_sequences(train_scaled, look_back),
+      # Validation is windowed with the tail of training as context, so every
+      # validation hour is scored instead of the first look_back hours being
+      # consumed as warm-up.
+      val   = make_sequences(val_scaled, look_back,
+                             context = tail(train_scaled, look_back))
     )
   }
   seq_cache[[key]]
 }
 
 
-# ---- 7. Grid search loop (scored on VALIDATION, never test) ----
+# ---- 5. Grid search loop (scored on VALIDATION, never test) ----
 build_model <- function(look_back, n_features, lstm_units, dropout_rate, learning_rate) {
   model <- keras_model_sequential() %>%
     layer_lstm(units = lstm_units, input_shape = c(look_back, n_features),
@@ -165,6 +115,8 @@ for (i in seq_len(nrow(grid))) {
   seqs <- get_sequences(cfg$look_back)
   n_features <- dim(seqs$train$x)[3]
 
+  # Re-seeded per configuration so the comparison reflects the
+  # hyperparameters rather than a lucky weight initialization.
   set.seed(42)
   tensorflow::set_random_seed(42)
 
@@ -184,8 +136,9 @@ for (i in seq_len(nrow(grid))) {
     verbose = 0
   )
 
-  val_loss <- min(history$metrics$val_loss)
-  val_mae  <- history$metrics$val_mae[[which.min(history$metrics$val_loss)]]
+  best_epoch <- which.min(history$metrics$val_loss)
+  val_loss   <- history$metrics$val_loss[[best_epoch]]
+  val_mae    <- history$metrics$val_mae[[best_epoch]]
 
   results_list[[i]] <- data.frame(
     look_back     = cfg$look_back,
@@ -195,10 +148,14 @@ for (i in seq_len(nrow(grid))) {
     batch_size    = cfg$batch_size,
     val_loss_mse  = val_loss,
     val_mae       = val_mae,
+    # Recorded so lstm_forecast.R can refit on all observed data for a
+    # matching number of epochs, where no validation set is left to early-stop on.
+    best_epoch    = best_epoch,
     n_epochs_run  = length(history$metrics$val_loss)
   )
 
-  cat("Val MSE:", round(val_loss, 5), " Val MAE:", round(val_mae, 5), "\n")
+  cat("Val MSE:", round(val_loss, 5), " Val MAE:", round(val_mae, 5),
+      " best epoch:", best_epoch, "\n")
 
   rm(model, history)
   gc()
@@ -208,87 +165,35 @@ tuning_results <- do.call(rbind, results_list) %>% arrange(val_loss_mse)
 
 cat("\n==== Tuning results (sorted by validation MSE) ====\n")
 print(tuning_results)
-write.csv(tuning_results, file.path(output_dir, "lstm_tuning_results.csv"), row.names = FALSE)
+write.csv(tuning_results, file.path(RESULTS_DIR, "lstm_tuning_results.csv"), row.names = FALSE)
 
 
-# ---- 8. Retrain the best config and evaluate on the TEST set ----
-best_cfg <- tuning_results[1, ]
-cat("\nBest config:\n")
-print(best_cfg)
+# ---- 6. Tuning comparison figure ----
+# One bar per configuration tried, sorted from best (lowest validation MSE)
+# to worst, with the selected configuration highlighted -- this shows which
+# hyperparameter combination won and by how much.
+plot_df <- tuning_results %>%
+  mutate(
+    config_label = sprintf("LB%d U%d D%.1f", look_back, lstm_units, dropout_rate),
+    config_label = factor(config_label, levels = config_label[order(-val_loss_mse)]),
+    is_best = row_number() == 1
+  )
 
-seqs_best <- get_sequences(best_cfg$look_back)
-test_seq  <- make_sequences(test_scaled, best_cfg$look_back, target_col)
-n_features <- dim(seqs_best$train$x)[3]
+p <- ggplot(plot_df, aes(x = config_label, y = val_loss_mse, fill = is_best)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = signif(val_loss_mse, 3)), hjust = -0.15, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("FALSE" = "grey65", "TRUE" = "#1f77b4"), guide = "none") +
+  labs(title = "LSTM Hyperparameter Search: Validation MSE by Configuration",
+       x = "Configuration (Look-back, Units, Dropout)",
+       y = "Validation MSE (scaled units)") +
+  expand_limits(y = max(plot_df$val_loss_mse) * 1.15) +
+  theme_minimal(base_size = 11)
 
-set.seed(42)
-tensorflow::set_random_seed(42)
+ggsave(file.path(RESULTS_DIR, "lstm_tuning_comparison.png"), plot = p,
+       width = 7, height = 4.5, dpi = 300)
 
-final_model <- build_model(best_cfg$look_back, n_features, best_cfg$lstm_units,
-                           best_cfg$dropout_rate, best_cfg$learning_rate)
+cat("\nBest config (lowest validation MSE):\n")
+print(tuning_results[1, ])
 
-early_stop <- callback_early_stopping(
-  monitor = "val_loss", patience = 8, restore_best_weights = TRUE
-)
-
-final_history <- final_model %>% fit(
-  x = seqs_best$train$x, y = seqs_best$train$y,
-  validation_data = list(seqs_best$val$x, seqs_best$val$y),
-  epochs = 50,
-  batch_size = best_cfg$batch_size,
-  callbacks = list(early_stop),
-  verbose = 2
-)
-
-plot(final_history)
-ggsave(file.path(output_dir, "lstm_tuned_training_history.png"), width = 8, height = 5)
-
-pred_scaled <- final_model %>% predict(test_seq$x)
-pred <- inverse_scale_target(as.vector(pred_scaled), scale_params)
-actual <- inverse_scale_target(test_seq$y, scale_params)
-
-mae  <- mean(abs(actual - pred))
-mse  <- mean((actual - pred)^2)
-rmse <- sqrt(mse)
-mape <- mean(abs((actual - pred) / actual)) * 100
-
-final_results <- data.frame(
-  Model = "LSTM (tuned)",
-  look_back = best_cfg$look_back,
-  lstm_units = best_cfg$lstm_units,
-  dropout_rate = best_cfg$dropout_rate,
-  learning_rate = best_cfg$learning_rate,
-  batch_size = best_cfg$batch_size,
-  MAE  = round(mae, 2),
-  MSE  = round(mse, 2),
-  RMSE = round(rmse, 2),
-  MAPE = paste0(round(mape, 2), "%")
-)
-
-cat("\n==== Tuned LSTM Test Set Performance ====\n")
-print(final_results)
-write.csv(final_results, file.path(output_dir, "lstm_tuned_metrics.csv"), row.names = FALSE)
-
-
-# ---- 9. Plot actual vs predicted (test period) for the tuned model ----
-# test_raw's dates are every date_time after VAL_END; the first look_back of
-# those are only lookback context (no prediction made for them), so drop
-# them to line up with pred/actual.
-test_dates <- df$date_time[df$date_time > VAL_END][(best_cfg$look_back + 1):nrow(test_raw)]
-
-plot_df <- data.frame(
-  date_time = test_dates,
-  actual = actual,
-  predicted = pred
-)
-
-ggplot(plot_df, aes(x = date_time)) +
-  geom_line(aes(y = actual, colour = "Actual"), linewidth = 0.4) +
-  geom_line(aes(y = predicted, colour = "Predicted"), linewidth = 0.4, alpha = 0.8) +
-  scale_colour_manual(values = c("Actual" = "black", "Predicted" = "red")) +
-  labs(title = "Tuned LSTM: Actual vs Predicted Traffic Volume (Test Set)",
-       x = "Date", y = "Traffic Volume", colour = NULL) +
-  theme_minimal()
-
-ggsave(file.path(output_dir, "lstm_tuned_actual_vs_predicted.png"), width = 10, height = 5)
-
-cat("\nSaved tuning results, metrics, and plots to:", output_dir, "\n")
+cat("\nSaved tuning results and comparison figure to:", RESULTS_DIR, "\n")

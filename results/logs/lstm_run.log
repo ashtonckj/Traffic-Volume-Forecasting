@@ -1,0 +1,161 @@
+Warning message:
+package 'lubridate' was built under R version 4.6.1 
+Warning message:
+package 'keras3' was built under R version 4.6.1 
+
+Attaching package: 'tensorflow'
+
+The following objects are masked from 'package:keras3':
+
+    set_random_seed, shape
+
+Warning message:
+package 'tensorflow' was built under R version 4.6.1 
+Warning message:
+package 'ggplot2' was built under R version 4.6.1 
+Downloading libclang (25.2MiB)
+Downloading tensorflow (334.7MiB)
+Downloading pandas (9.4MiB)
+Downloading jedi (4.7MiB)
+Downloading pygments (1.2MiB)
+Downloading pillow (6.9MiB)
+Downloading keras (2.3MiB)
+Downloading h5py (2.7MiB)
+Downloading scipy (34.9MiB)
+Downloading numpy (14.8MiB)
+Downloading grpcio (4.9MiB)
+ Downloaded pygments
+ Downloaded h5py
+ Downloaded keras
+ Downloaded grpcio
+ Downloaded pillow
+ Downloaded pandas
+ Downloaded numpy
+ Downloaded libclang
+ Downloaded scipy
+ Downloaded jedi
+ Downloaded tensorflow
+Installed 53 packages in 40.20s
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787843332.497976   26876 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787843434.757505   26876 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+Loaded 26304 rows spanning 2015-10-01 to 2018-09-30 23:00:00 
+Train: 21912 (2015-10-01 .. 2018-03-31 23:00:00)
+Val:   2184 (2018-04-01 .. 2018-06-30 23:00:00)
+Test:  2208 (2018-07-01 .. 2018-09-30 23:00:00)
+
+Loaded best configuration from tuning results:
+  look_back lstm_units dropout_rate learning_rate batch_size val_loss_mse
+1       168         64          0.2         0.001         64 0.0008626587
+     val_mae n_epochs_run
+1 0.02102312           33
+Sequence shapes -> train: 21744x168x12  val: 2184x168x12  test: 2208x168x12 
+C:\Users\stick\AppData\Local\R\cache\R\RETICU~1\uv\cache\ARCHIV~1\_SU13U~1\Lib\site-packages\keras\src\layers\rnn\rnn.py:199: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.
+  super().__init__(**kwargs)
+WARNING:tensorflow:TensorFlow GPU support is not available on native Windows for TensorFlow >= 2.11. Even if CUDA/cuDNN are installed, GPU will not be used. Please use WSL2 or the TensorFlow-DirectML plugin.
+Model: "sequential"
+┌───────────────────────────────────┬──────────────────────────┬───────────────
+│ Layer (type)                      │ Output Shape             │       Param # 
+├───────────────────────────────────┼──────────────────────────┼───────────────
+│ lstm (LSTM)                       │ (None, 64)               │        19,712 
+├───────────────────────────────────┼──────────────────────────┼───────────────
+│ dropout (Dropout)                 │ (None, 64)               │             0 
+├───────────────────────────────────┼──────────────────────────┼───────────────
+│ dense (Dense)                     │ (None, 32)               │         2,080 
+├───────────────────────────────────┼──────────────────────────┼───────────────
+│ dense_1 (Dense)                   │ (None, 1)                │            33 
+└───────────────────────────────────┴──────────────────────────┴───────────────
+ Total params: 21,825 (85.25 KB)
+ Trainable params: 21,825 (85.25 KB)
+ Non-trainable params: 0 (0.00 B)
+Epoch 1/50
+340/340 - 82s - 240ms/step - loss: 0.0213 - mae: 0.1067 - val_loss: 0.0065 - val_mae: 0.0576
+Epoch 2/50
+340/340 - 69s - 202ms/step - loss: 0.0076 - mae: 0.0651 - val_loss: 0.0034 - val_mae: 0.0432
+Epoch 3/50
+340/340 - 65s - 191ms/step - loss: 0.0050 - mae: 0.0529 - val_loss: 0.0025 - val_mae: 0.0370
+Epoch 4/50
+340/340 - 80s - 234ms/step - loss: 0.0040 - mae: 0.0470 - val_loss: 0.0019 - val_mae: 0.0316
+Epoch 5/50
+340/340 - 84s - 246ms/step - loss: 0.0034 - mae: 0.0432 - val_loss: 0.0016 - val_mae: 0.0289
+Epoch 6/50
+340/340 - 68s - 200ms/step - loss: 0.0030 - mae: 0.0406 - val_loss: 0.0017 - val_mae: 0.0297
+Epoch 7/50
+340/340 - 60s - 176ms/step - loss: 0.0027 - mae: 0.0384 - val_loss: 0.0013 - val_mae: 0.0253
+Epoch 8/50
+340/340 - 50s - 147ms/step - loss: 0.0026 - mae: 0.0375 - val_loss: 0.0014 - val_mae: 0.0264
+Epoch 9/50
+340/340 - 64s - 189ms/step - loss: 0.0025 - mae: 0.0368 - val_loss: 0.0012 - val_mae: 0.0247
+Epoch 10/50
+340/340 - 79s - 232ms/step - loss: 0.0024 - mae: 0.0355 - val_loss: 0.0012 - val_mae: 0.0241
+Epoch 11/50
+340/340 - 60s - 177ms/step - loss: 0.0023 - mae: 0.0349 - val_loss: 0.0013 - val_mae: 0.0258
+Epoch 12/50
+340/340 - 59s - 173ms/step - loss: 0.0023 - mae: 0.0348 - val_loss: 0.0011 - val_mae: 0.0228
+Epoch 13/50
+340/340 - 56s - 165ms/step - loss: 0.0022 - mae: 0.0341 - val_loss: 0.0012 - val_mae: 0.0255
+Epoch 14/50
+340/340 - 58s - 170ms/step - loss: 0.0021 - mae: 0.0333 - val_loss: 0.0011 - val_mae: 0.0231
+Epoch 15/50
+340/340 - 55s - 162ms/step - loss: 0.0021 - mae: 0.0331 - val_loss: 0.0011 - val_mae: 0.0234
+Epoch 16/50
+340/340 - 43s - 125ms/step - loss: 0.0020 - mae: 0.0327 - val_loss: 0.0011 - val_mae: 0.0244
+Epoch 17/50
+340/340 - 38s - 113ms/step - loss: 0.0020 - mae: 0.0323 - val_loss: 0.0011 - val_mae: 0.0240
+Epoch 18/50
+340/340 - 38s - 112ms/step - loss: 0.0020 - mae: 0.0319 - val_loss: 0.0010 - val_mae: 0.0234
+Epoch 19/50
+340/340 - 35s - 104ms/step - loss: 0.0019 - mae: 0.0318 - val_loss: 0.0011 - val_mae: 0.0242
+Epoch 20/50
+340/340 - 39s - 116ms/step - loss: 0.0019 - mae: 0.0312 - val_loss: 0.0011 - val_mae: 0.0241
+Epoch 21/50
+340/340 - 31s - 90ms/step - loss: 0.0019 - mae: 0.0309 - val_loss: 0.0011 - val_mae: 0.0246
+Epoch 22/50
+340/340 - 26s - 76ms/step - loss: 0.0019 - mae: 0.0310 - val_loss: 0.0010 - val_mae: 0.0231
+Epoch 23/50
+340/340 - 24s - 70ms/step - loss: 0.0018 - mae: 0.0304 - val_loss: 0.0011 - val_mae: 0.0248
+Epoch 24/50
+340/340 - 32s - 95ms/step - loss: 0.0018 - mae: 0.0302 - val_loss: 0.0010 - val_mae: 0.0244
+Epoch 25/50
+340/340 - 36s - 105ms/step - loss: 0.0018 - mae: 0.0305 - val_loss: 9.1947e-04 - val_mae: 0.0216
+Epoch 26/50
+340/340 - 32s - 94ms/step - loss: 0.0017 - mae: 0.0299 - val_loss: 9.9688e-04 - val_mae: 0.0230
+Epoch 27/50
+340/340 - 32s - 93ms/step - loss: 0.0017 - mae: 0.0296 - val_loss: 9.7700e-04 - val_mae: 0.0223
+Epoch 28/50
+340/340 - 34s - 99ms/step - loss: 0.0017 - mae: 0.0296 - val_loss: 0.0010 - val_mae: 0.0225
+Epoch 29/50
+340/340 - 30s - 90ms/step - loss: 0.0017 - mae: 0.0293 - val_loss: 0.0010 - val_mae: 0.0230
+Epoch 30/50
+340/340 - 32s - 94ms/step - loss: 0.0017 - mae: 0.0293 - val_loss: 9.6137e-04 - val_mae: 0.0224
+Epoch 31/50
+340/340 - 32s - 94ms/step - loss: 0.0016 - mae: 0.0288 - val_loss: 9.4259e-04 - val_mae: 0.0216
+Epoch 32/50
+340/340 - 32s - 95ms/step - loss: 0.0016 - mae: 0.0289 - val_loss: 9.6239e-04 - val_mae: 0.0224
+Epoch 33/50
+340/340 - 32s - 93ms/step - loss: 0.0016 - mae: 0.0287 - val_loss: 9.6033e-04 - val_mae: 0.0225
+
+Best epoch: 25 of 33 run
+
+==== Test Set Performance (2018-07-01 .. 2018-09-30) ====
+                       Model look_back lstm_units dropout_rate learning_rate
+1               LSTM (tuned)       168         64          0.2         0.001
+2 Seasonal Naive (benchmark)       168         NA           NA            NA
+  batch_size best_epoch n_test    MAE       MSE   RMSE  MAPE
+1         64         25   2208 151.10  47700.87 218.41  7.12
+2         NA         NA   2208 261.77 305553.91 552.77 10.60
+
+LSTM improvement over Seasonal Naive: MAE 42.3%, RMSE 60.5%
+
+Mean absolute residual by period:
+# A tibble: 5 × 3
+  period            mean_abs_resid mean_actual
+  <chr>                      <dbl>       <dbl>
+1 AM peak (06-09)            184.         4532
+2 Evening (19-23)            171.         2618
+3 Midday (10-14)             166.         4597
+4 Overnight (00-05)           90.8         871
+5 PM peak (15-18)            165.         5111
+
+Saved final tuned model results and plots to: results 

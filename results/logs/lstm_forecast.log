@@ -1,0 +1,116 @@
+Warning message:
+package 'lubridate' was built under R version 4.6.1 
+Warning message:
+package 'keras3' was built under R version 4.6.1 
+
+Attaching package: 'tensorflow'
+
+The following objects are masked from 'package:keras3':
+
+    set_random_seed, shape
+
+Warning message:
+package 'tensorflow' was built under R version 4.6.1 
+Warning message:
+package 'ggplot2' was built under R version 4.6.1 
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787845268.586469   27752 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787845302.119669   27752 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+Observed series: 26304 hours, 2015-10-01 .. 2018-09-30 23:00:00 
+  look_back lstm_units dropout_rate learning_rate batch_size val_loss_mse
+1       168         64          0.2         0.001         64 0.0008626587
+     val_mae n_epochs_run
+1 0.02102312           33
+Warning message:
+best_epoch missing from tuning results -- defaulting to 30 refit epochs. 
+Refitting for 30 epochs (best epoch found during tuning).
+Forecast horizon: 2208 hours ( 2018-10-01 .. 2018-12-31 23:00:00 )
+Holiday hours in horizon: 96 ( 4 days )
+Refit training sequences: 26136x168x12 
+C:\Users\stick\AppData\Local\R\cache\R\RETICU~1\uv\cache\ARCHIV~1\_SU13U~1\Lib\site-packages\keras\src\layers\rnn\rnn.py:199: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.
+  super().__init__(**kwargs)
+WARNING:tensorflow:TensorFlow GPU support is not available on native Windows for TensorFlow >= 2.11. Even if CUDA/cuDNN are installed, GPU will not be used. Please use WSL2 or the TensorFlow-DirectML plugin.
+Epoch 1/30
+409/409 - 37s - 91ms/step - loss: 0.0181 - mae: 0.0971
+Epoch 2/30
+409/409 - 35s - 87ms/step - loss: 0.0061 - mae: 0.0583
+Epoch 3/30
+409/409 - 41s - 101ms/step - loss: 0.0044 - mae: 0.0490
+Epoch 4/30
+409/409 - 36s - 88ms/step - loss: 0.0036 - mae: 0.0440
+Epoch 5/30
+409/409 - 35s - 87ms/step - loss: 0.0031 - mae: 0.0413
+Epoch 6/30
+409/409 - 42s - 102ms/step - loss: 0.0028 - mae: 0.0387
+Epoch 7/30
+409/409 - 42s - 103ms/step - loss: 0.0026 - mae: 0.0371
+Epoch 8/30
+409/409 - 41s - 99ms/step - loss: 0.0024 - mae: 0.0360
+Epoch 9/30
+409/409 - 36s - 89ms/step - loss: 0.0023 - mae: 0.0351
+Epoch 10/30
+409/409 - 37s - 90ms/step - loss: 0.0022 - mae: 0.0344
+Epoch 11/30
+409/409 - 40s - 98ms/step - loss: 0.0022 - mae: 0.0337
+Epoch 12/30
+409/409 - 34s - 84ms/step - loss: 0.0021 - mae: 0.0330
+Epoch 13/30
+409/409 - 41s - 101ms/step - loss: 0.0021 - mae: 0.0327
+Epoch 14/30
+409/409 - 36s - 88ms/step - loss: 0.0019 - mae: 0.0319
+Epoch 15/30
+409/409 - 37s - 89ms/step - loss: 0.0019 - mae: 0.0316
+Epoch 16/30
+409/409 - 40s - 98ms/step - loss: 0.0019 - mae: 0.0313
+Epoch 17/30
+409/409 - 41s - 101ms/step - loss: 0.0019 - mae: 0.0310
+Epoch 18/30
+409/409 - 37s - 91ms/step - loss: 0.0018 - mae: 0.0306
+Epoch 19/30
+409/409 - 28s - 68ms/step - loss: 0.0018 - mae: 0.0302
+Epoch 20/30
+409/409 - 20s - 49ms/step - loss: 0.0017 - mae: 0.0299
+Epoch 21/30
+409/409 - 21s - 52ms/step - loss: 0.0017 - mae: 0.0297
+Epoch 22/30
+409/409 - 24s - 58ms/step - loss: 0.0017 - mae: 0.0293
+Epoch 23/30
+409/409 - 20s - 48ms/step - loss: 0.0017 - mae: 0.0292
+Epoch 24/30
+409/409 - 20s - 49ms/step - loss: 0.0016 - mae: 0.0289
+Epoch 25/30
+409/409 - 21s - 51ms/step - loss: 0.0016 - mae: 0.0288
+Epoch 26/30
+409/409 - 23s - 57ms/step - loss: 0.0016 - mae: 0.0285
+Epoch 27/30
+409/409 - 20s - 48ms/step - loss: 0.0016 - mae: 0.0283
+Epoch 28/30
+409/409 - 19s - 47ms/step - loss: 0.0016 - mae: 0.0282
+Epoch 29/30
+409/409 - 18s - 44ms/step - loss: 0.0016 - mae: 0.0281
+Epoch 30/30
+409/409 - 21s - 52ms/step - loss: 0.0015 - mae: 0.0278
+
+Forecasting 2208 hours recursively...
+  |                                                                              |                                                                      |   0%  |                                                                              |=                                                                     |   1%  |                                                                              |==                                                                    |   2%  |                                                                              |==                                                                    |   3%  |                                                                              |===                                                                   |   4%  |                                                                              |====                                                                  |   5%  |                                                                              |=====                                                                 |   7%  |                                                                              |=====                                                                 |   8%  |                                                                              |======                                                                |   9%  |                                                                              |=======                                                               |  10%  |                                                                              |========                                                              |  11%  |                                                                              |========                                                              |  12%  |                                                                              |=========                                                             |  13%  |                                                                              |==========                                                            |  14%  |                                                                              |===========                                                           |  15%  |                                                                              |===========                                                           |  16%  |                                                                              |============                                                          |  17%  |                                                                              |=============                                                         |  18%  |                                                                              |==============                                                        |  20%  |                                                                              |==============                                                        |  21%  |                                                                              |===============                                                       |  22%  |                                                                              |================                                                      |  23%  |                                                                              |=================                                                     |  24%  |                                                                              |==================                                                    |  25%  |                                                                              |==================                                                    |  26%  |                                                                              |===================                                                   |  27%  |                                                                              |====================                                                  |  28%  |                                                                              |=====================                                                 |  29%  |                                                                              |=====================                                                 |  30%  |                                                                              |======================                                                |  32%  |                                                                              |=======================                                               |  33%  |                                                                              |========================                                              |  34%  |                                                                              |========================                                              |  35%  |                                                                              |=========================                                             |  36%  |                                                                              |==========================                                            |  37%  |                                                                              |===========================                                           |  38%  |                                                                              |===========================                                           |  39%  |                                                                              |============================                                          |  40%  |                                                                              |=============================                                         |  41%  |                                                                              |==============================                                        |  42%  |                                                                              |==============================                                        |  43%  |                                                                              |===============================                                       |  45%  |                                                                              |================================                                      |  46%  |                                                                              |=================================                                     |  47%  |                                                                              |=================================                                     |  48%  |                                                                              |==================================                                    |  49%  |                                                                              |===================================                                   |  50%  |                                                                              |====================================                                  |  51%  |                                                                              |=====================================                                 |  52%  |                                                                              |=====================================                                 |  53%  |                                                                              |======================================                                |  54%  |                                                                              |=======================================                               |  55%  |                                                                              |========================================                              |  57%  |                                                                              |========================================                              |  58%  |                                                                              |=========================================                             |  59%  |                                                                              |==========================================                            |  60%  |                                                                              |===========================================                           |  61%  |                                                                              |===========================================                           |  62%  |                                                                              |============================================                          |  63%  |                                                                              |=============================================                         |  64%  |                                                                              |==============================================                        |  65%  |                                                                              |==============================================                        |  66%  |                                                                              |===============================================                       |  67%  |                                                                              |================================================                      |  68%  |                                                                              |=================================================                     |  70%  |                                                                              |=================================================                     |  71%  |                                                                              |==================================================                    |  72%  |                                                                              |===================================================                   |  73%  |                                                                              |====================================================                  |  74%  |                                                                              |====================================================                  |  75%  |                                                                              |=====================================================                 |  76%  |                                                                              |======================================================                |  77%  |                                                                              |=======================================================               |  78%  |                                                                              |========================================================              |  79%  |                                                                              |========================================================              |  80%  |                                                                              |=========================================================             |  82%  |                                                                              |==========================================================            |  83%  |                                                                              |===========================================================           |  84%  |                                                                              |===========================================================           |  85%  |                                                                              |============================================================          |  86%  |                                                                              |=============================================================         |  87%  |                                                                              |==============================================================        |  88%  |                                                                              |==============================================================        |  89%  |                                                                              |===============================================================       |  90%  |                                                                              |================================================================      |  91%  |                                                                              |=================================================================     |  92%  |                                                                              |=================================================================     |  93%  |                                                                              |==================================================================    |  95%  |                                                                              |===================================================================   |  96%  |                                                                              |====================================================================  |  97%  |                                                                              |====================================================================  |  98%  |                                                                              |===================================================================== |  99%  |                                                                              |======================================================================| 100%
+
+==== Forecast summary (2018-10-01 .. 2018-12-31) ====
+Mean: 2915  Min: 110  Max: 5965 vehicles/h
+
+Monthly mean forecast vs same months in the observed record:
+  month forecast_mean observed_mean
+1    10          3021          3317
+2    11          2914          3194
+3    12          2809          3142
+
+Forecast mean by day type:
+     type mean_forecast hours
+1 Holiday          1893    96
+2 Weekday          3218  1488
+3 Weekend          2348   624
+Warning message:
+In scale_x_datetime() : A <numeric> value was passed to a Datetime scale.
+ℹ The value was converted to a <POSIXct> object.
+
+Saved forecast and figures to: results 
