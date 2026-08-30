@@ -50,6 +50,7 @@ cat("=== Raw Data Overview ===\n")
 cat("Raw rows read:", nrow(df), "\n")
 cat("Date range   :", as.character(min(df$date_time)), "to", as.character(max(df$date_time)), "\n\n")
 
+
 # ---- 1a. Remove fully duplicated rows ----
 n_before <- nrow(df)
 df <- distinct(df)

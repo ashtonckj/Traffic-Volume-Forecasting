@@ -1,21 +1,27 @@
 # ============================================================
 #  SARIMA Model — Metro Interstate Traffic Volume
 #  Input : data/processed/traffic_volume_processed.csv
-#  Output: output/models/  (plots + diagnostics + forecasts)
+#  Output: output/models/SARIMA/  (plots + diagnostics + forecasts)
 #
-#  Key changes vs previous version:
-#   - ts() with frequency=24 (not msts) to avoid head()/tail()
-#     silently stripping multi-period attributes
+#  Key design decisions:
+#   - ts() with frequency=24 (daily cycle via seasonal ARIMA)
 #   - Weekly (168h) Fourier terms built by hand, phase-aligned
-#     across pilot/train/test slices — fourier() is NOT used
-#     because it derives its period from frequency(ts), not 168
-#   - Separate K tuning for daily (via SARIMA P/Q) vs weekly
-#     (via Fourier) — K_MAX raised to 20 for 168h period
-#   - is_holiday added as exogenous regressor (known in advance,
-#     no leakage)
-#   - Ljung-Box also checked at lag 168 to verify weekly leak
-#     is gone after fix
-#   - stepwise=FALSE, approximation=FALSE for final fit
+#     across train/valid/test — fourier() is NOT used because
+#     it derives its period from frequency(ts)=24, not 168
+#   - THREE-WAY SPLIT: 70% train / 15% validation / 15% test
+#     (index-based, not calendar-month, so proportions are exact)
+#   - K tuned only at multiples of 7 (7, 14, 21, 28): at those
+#     values the weekly Fourier basis also recovers daily harmonics
+#     (k=7 -> 24h, k=14 -> 12h, k=21 -> 8h, k=28 -> 6h), so the
+#     RMSE curve has its meaningful "cliff" steps there — searching
+#     intermediate K values adds runtime without decision value
+#   - K selected by out-of-sample validation RMSE (not AICc)
+#   - D fixed to 0: Fourier terms already absorb seasonal structure;
+#     D>=1 + Fourier causes near-collinearity -> Inf AICc
+#   - is_holiday as deterministic exogenous regressor
+#   - Ljung-Box at lag 48 (daily) AND lag 168 (weekly)
+#   - stepwise=TRUE, approximation=TRUE for speed (change to FALSE
+#     for a final exhaustive fit before submission)
 # ============================================================
 
 
@@ -46,6 +52,16 @@ cat("Loaded:", nrow(df), "rows |",
     "Range:", as.character(min(df$date_time)), "to",
     as.character(max(df$date_time)), "\n")
 
+# is_imputed tracks gap-filled hours from preprocessing.R
+# (0 = observed, 1 = interpolated / t-168 fill).
+if (!"is_imputed" %in% names(df)) {
+  warning("is_imputed column not found — assuming all rows observed. ",
+          "Re-run the current preprocessing.R to get imputation tracking.")
+  df$is_imputed <- 0L
+}
+cat("Imputed hours in full series:", sum(df$is_imputed), "/", nrow(df),
+    sprintf("(%.1f%%)\n", 100 * mean(df$is_imputed)))
+
 
 # ── 3. Guard: verify the series is truly hourly with no gaps ─
 expected_hours <- as.numeric(
@@ -62,44 +78,82 @@ cat("Grid check passed: series is complete and hourly.\n")
 
 
 # ── 4. Build ts Object ───────────────────────────────────────
-# Plain ts with frequency=24: the seasonal ARIMA (P,D,Q)[24]
-# component handles the daily cycle. The weekly cycle (168h) is
-# handled via hand-built Fourier regressors in Section 7.
-#
-# We deliberately avoid msts here: head()/tail() (used for the
-# train/test split) dispatch to head.ts/tail.ts, which know
-# about frequency/start but NOT about the msts seasonal.periods
-# attribute. The result is that ts_train can silently downgrade
-# to a plain single-frequency ts — no error, just wrong behavior
-# downstream. Using ts(freq=24) avoids this entirely.
-SEASON       <- 24
+SEASON        <- 24
 WEEKLY_PERIOD <- 168
 
-ts_tv <- ts(df$traffic_volume, frequency = SEASON)
+ts_tv  <- ts(df$traffic_volume, frequency = SEASON)
+tv_vec <- as.numeric(ts_tv)
 
 cat("ts object — length:", length(ts_tv),
     "| frequency:", frequency(ts_tv), "\n")
 
 
-# ── 5. Train / Test Split ────────────────────────────────────
-# Hold out the final 56 days (1344 hours) as the test window.
-#
-# NOTE: head()/tail() are used instead of window() to avoid an
-# edge case where TRAIN_N %% SEASON == 0 produces a cycle index
-# of 0, which window() treats as the last cycle of the prior
-# period and silently returns the wrong observations.
-TEST_H  <- 24 * 56
-TRAIN_N <- length(ts_tv) - TEST_H
+# ── 5. Train / Validation / Test Split (70 / 15 / 15) ────────
+# Index-based proportional split so the ratios are exact
+# regardless of how many rows the processed file contains.
+# Time ordering is preserved — train precedes validation which
+# precedes test, with no overlap.
+N         <- nrow(df)
+TRAIN_N   <- floor(0.70 * N)
+VALID_H   <- floor(0.15 * N)
+TEST_H    <- N - TRAIN_N - VALID_H   # remainder goes to test so N is exact
 
-ts_train <- head(ts_tv, TRAIN_N)
-ts_test  <- tail(ts_tv, TEST_H)
+# Sanity checks
+stopifnot(TRAIN_N + VALID_H + TEST_H == N)
+stopifnot(TRAIN_N > 0, VALID_H > 0, TEST_H > 0)
 
-cat("Train length:", length(ts_train),
-    "| Test length:", length(ts_test), "\n")
+ts_train <- ts(tv_vec[1:TRAIN_N],                                      frequency = SEASON)
+ts_valid <- ts(tv_vec[(TRAIN_N + 1):(TRAIN_N + VALID_H)],              frequency = SEASON)
+ts_test  <- ts(tv_vec[(TRAIN_N + VALID_H + 1):N],                      frequency = SEASON)
+
+cat("\n=== Train / Validation / Test Split (70 / 15 / 15) ===\n")
+cat(sprintf("Train : rows   1 – %d  |  %s  to  %s  |  %.1f%%\n",
+            TRAIN_N,
+            as.character(df$date_time[1]),
+            as.character(df$date_time[TRAIN_N]),
+            100 * TRAIN_N / N))
+cat(sprintf("Valid : rows %d – %d  |  %s  to  %s  |  %.1f%%\n",
+            TRAIN_N + 1,
+            TRAIN_N + VALID_H,
+            as.character(df$date_time[TRAIN_N + 1]),
+            as.character(df$date_time[TRAIN_N + VALID_H]),
+            100 * VALID_H / N))
+cat(sprintf("Test  : rows %d – %d  |  %s  to  %s  |  %.1f%%\n",
+            TRAIN_N + VALID_H + 1,
+            N,
+            as.character(df$date_time[TRAIN_N + VALID_H + 1]),
+            as.character(df$date_time[N]),
+            100 * TEST_H / N))
+
+# ── 5b. Imputation-leakage check on validation and test ──────
+valid_imputed_idx  <- df$is_imputed[(TRAIN_N + 1):(TRAIN_N + VALID_H)]
+test_imputed_idx   <- df$is_imputed[(TRAIN_N + VALID_H + 1):N]
+n_imputed_in_valid <- sum(valid_imputed_idx)
+n_imputed_in_test  <- sum(test_imputed_idx)
+
+if (n_imputed_in_valid > 0) {
+  cat(sprintf(
+    "\nNOTE: %d of %d validation hours (%.1f%%) are imputed. ",
+    n_imputed_in_valid, VALID_H, 100 * n_imputed_in_valid / VALID_H
+  ))
+  cat("K is being selected by comparing forecasts against some gap-filled 'actuals'.\n")
+} else {
+  cat("\nNo imputed hours in the validation window — clean for K tuning.\n")
+}
+
+if (n_imputed_in_test > 0) {
+  cat(sprintf(
+    "\nWARNING: %d of %d test-window hours (%.1f%%) are imputed, not observed.\n",
+    n_imputed_in_test, TEST_H, 100 * n_imputed_in_test / TEST_H
+  ))
+  cat("Supplementary accuracy on observed-only hours is computed in Section 11b.\n")
+} else {
+  cat("No imputed hours in the test window — clean for final evaluation.\n")
+}
 
 
 # ── 6. Stationarity Tests ────────────────────────────────────
-# Tests are run on the training series only — no test leakage.
+# Run on training series only — no leakage into tuning/test data.
 cat("\n--- Stationarity tests on training series ---\n")
 
 adf_res  <- adf.test(as.numeric(ts_train), alternative = "stationary")
@@ -110,42 +164,20 @@ cat(sprintf("ADF  p = %.4f  (%s)\n", adf_res$p.value,
 cat(sprintf("KPSS p = %.4f  (%s)\n", kpss_res$p.value,
             ifelse(kpss_res$p.value > 0.05, "stationary", "non-stationary")))
 
-# Determine non-seasonal differencing order only.
-# D is fixed to 0: Fourier regressors already absorb seasonal
-# structure, so combining D>=1 with Fourier terms double-handles
-# seasonality and causes near-collinearity that blows up the
-# likelihood (Inf AICc for every candidate model).
+# D fixed to 0 throughout — see header.
 d_order <- ndiffs(ts_train)
 cat("Suggested d:", d_order, "\n")
 cat("D fixed to 0 (Fourier terms handle seasonal structure).\n")
 
 
 # ── 7. Weekly Fourier Terms (hand-built, period = 168h) ──────
-# WHY NOT fourier()? forecast::fourier() builds sin/cos terms
-# using frequency(x) as the period — for a ts with freq=24 that
-# gives period=24, not 168. Every "weekly" term in the previous
-# version was actually a redundant harmonic of the daily cycle,
-# which is why K pinned to 12 (the maximum) and the weekly
-# signal leaked into the residuals.
-#
-# Here we build the terms manually with a fixed period of 168.
-# start_t tracks where each slice begins in the FULL series so
-# that the sin/cos phase stays consistent across pilot → train
-# → test. If start_t were always reset to 1, the phase would
-# shift and the regressors would be misaligned at the forecast
-# origin.
-#
-# K_MAX: floor(168/2) = 84 is the mathematical limit, but past
-# ~20-30 pairs you are mostly fitting noise. We cap at 20 for
-# the pilot search; raise if AICc is still falling at K=20.
+# forecast::fourier() is NOT used — see header for why.
+# start_t preserves phase alignment across all three splits by
+# anchoring each slice to its position in the FULL series index.
 
 make_weekly_fourier <- function(n, K, start_t = 1) {
-  # n       : number of rows to generate
-  # K       : number of sin/cos pairs
-  # start_t : index of the first row in the FULL series
-  #           (1-based; ensures phase alignment across slices)
-  t <- start_t:(start_t + n - 1)
-  X <- matrix(NA_real_, nrow = n, ncol = 2 * K)
+  t  <- start_t:(start_t + n - 1)
+  X  <- matrix(NA_real_, nrow = n, ncol = 2 * K)
   cn <- character(2 * K)
   for (k in seq_len(K)) {
     X[, 2*k - 1] <- sin(2 * pi * k * t / WEEKLY_PERIOD)
@@ -157,101 +189,147 @@ make_weekly_fourier <- function(n, K, start_t = 1) {
   X
 }
 
-# ── 7a. Pilot K search ───────────────────────────────────────
-# Phase 1: fast pilot search over K=1:K_MAX using a recent
-# sub-series. stepwise=TRUE and approximation=TRUE keep each
-# fit to seconds rather than minutes.
-# Phase 2: full training series is fitted once (Section 8)
-# with the winning K.
-# Set TUNE_K=FALSE to skip the search and use K_FIXED directly.
+# Builds the full xreg matrix (Fourier + is_holiday) for all three
+# splits simultaneously, with phase alignment guaranteed.
+build_xreg <- function(K) {
+  list(
+    train = cbind(
+      make_weekly_fourier(TRAIN_N, K, start_t = 1),
+      is_holiday = df$is_holiday[1:TRAIN_N]
+    ),
+    valid = cbind(
+      make_weekly_fourier(VALID_H, K, start_t = TRAIN_N + 1),
+      is_holiday = df$is_holiday[(TRAIN_N + 1):(TRAIN_N + VALID_H)]
+    ),
+    test = cbind(
+      make_weekly_fourier(TEST_H, K, start_t = TRAIN_N + VALID_H + 1),
+      is_holiday = df$is_holiday[(TRAIN_N + VALID_H + 1):N]
+    )
+  )
+}
 
-TUNE_K      <- FALSE
-K_FIXED     <- 20      # used when TUNE_K=FALSE; overwritten otherwise
-K_MAX       <- 20     # raise to 30 if AICc is still falling at 20
+MAX_P_SEASONAL <- 4
+MAX_Q_SEASONAL <- 4
 
-PILOT_WEEKS <- 26
-PILOT_N     <- min(PILOT_WEEKS * 7 * 24, length(ts_train))
 
-# pilot_start_t: the position of the pilot's first observation
-# within the FULL series (so phase is correct)
-pilot_start_t <- TRAIN_N - PILOT_N + 1
-ts_pilot      <- tail(ts_train, PILOT_N)
+# ── 7a. K Tuning (multiples of 7 only: 7, 14, 21, 28) ───────
+# WHY MULTIPLES OF 7 ONLY?
+# The weekly Fourier basis has period 168 = 7 x 24. At every
+# multiple of 7, the k-th harmonic coincides with a daily harmonic:
+#   k =  7  ->  168/7  = 24h   (fundamental daily cycle)
+#   k = 14  ->  168/14 = 12h   (twice-daily: AM + PM peaks)
+#   k = 21  ->  168/21 =  8h   (three times daily)
+#   k = 28  ->  168/28 =  6h   (four times daily)
+# These are exactly the frequencies where meaningful new traffic
+# structure is added. Intermediate values (k=1-6, 8-13, ...) add
+# harmonics of the weekly cycle that contribute little to forecast
+# accuracy but cost extra parameters and runtime. Restricting the
+# search to {7, 14, 21, 28} gives the four most impactful candidate
+# models and keeps the tuning loop under ~15-20 minutes.
+#
+# Set TUNE_K = TRUE to run the search; TUNE_K = FALSE uses K_FIXED.
+
+TUNE_K  <- TRUE
+K_FIXED <- 7      # fallback if TUNE_K = FALSE
+K_GRID  <- c(7, 14, 21, 28)
 
 if (TUNE_K) {
-  cat("\nTuning weekly Fourier K on", PILOT_N, "obs pilot (~",
-      round(PILOT_N / 168, 1), "weeks) ...\n")
+  cat("\nTuning K on out-of-sample validation RMSE —",
+      "candidates:", paste(K_GRID, collapse = ", "), "\n")
   
-  k_grid   <- 1:K_MAX
-  aicc_vec <- rep(NA_real_, length(k_grid))
+  rmse_vec <- rep(NA_real_, length(K_GRID))
+  aicc_vec <- rep(NA_real_, length(K_GRID))
   
-  for (k in k_grid) {
+  for (i in seq_along(K_GRID)) {
+    k <- K_GRID[i]
     tryCatch({
+      xr    <- build_xreg(k)
       fit_k <- auto.arima(
-        ts_pilot,
-        xreg          = make_weekly_fourier(PILOT_N, k, start_t = pilot_start_t),
+        ts_train,
+        xreg          = xr$train,
         seasonal      = TRUE,
-        stepwise      = FALSE,      # fast: pilot only needs to rank K values
-        approximation = TRUE,      # fast: pilot only needs to rank K values
-        d  = d_order, D = 0,
+        stepwise      = TRUE,       # fast: only for ranking K
+        approximation = TRUE,       # fast: only for ranking K
+        d  = d_order,
+        D  = 0,
         max.p = 3, max.q = 3,
-        max.P = 2,  max.Q = 2
+        max.P = MAX_P_SEASONAL,
+        max.Q = MAX_Q_SEASONAL
       )
-      aicc_vec[k] <- fit_k$aicc
-      cat(sprintf("  K = %2d  AICc = %.2f\n", k, fit_k$aicc))
+      fc_k        <- forecast(fit_k, xreg = xr$valid, h = VALID_H)
+      rmse_vec[i] <- sqrt(mean(
+        (as.numeric(ts_valid) - as.numeric(fc_k$mean))^2
+      ))
+      aicc_vec[i] <- fit_k$aicc
+      cat(sprintf("  K = %2d  |  Validation RMSE = %8.2f  |  Train AICc = %.2f\n",
+                  k, rmse_vec[i], aicc_vec[i]))
     }, error = function(e) {
       cat(sprintf("  K = %2d  FAILED: %s\n", k, conditionMessage(e)))
     })
   }
   
-  if (all(is.na(aicc_vec))) stop("All K values failed during pilot search.")
-  K_FIXED <- k_grid[which.min(aicc_vec)]
-  cat("Best weekly K from pilot search:", K_FIXED, "\n")
+  if (all(is.na(rmse_vec))) stop("All K candidates failed. Check your data.")
+  
+  best_i  <- which.min(rmse_vec)
+  K_FIXED <- K_GRID[best_i]
+  cat(sprintf("\nBest K by validation RMSE: %d  (RMSE = %.2f)\n",
+              K_FIXED, rmse_vec[best_i]))
+  
+  # Save K tuning results
+  tuning_df <- data.frame(K = K_GRID, Validation_RMSE = rmse_vec, AICc = aicc_vec)
+  write.csv(tuning_df,
+            file.path(output_dir, "sarima_k_tuning.csv"),
+            row.names = FALSE)
+  cat("Saved -> output/models/SARIMA/sarima_k_tuning.csv\n")
+} else {
+  cat(sprintf("\nTUNE_K = FALSE — using fixed K = %d\n", K_FIXED))
+  rmse_vec <- rep(NA_real_, length(K_GRID))
+  aicc_vec <- rep(NA_real_, length(K_GRID))
 }
 
-# ── 7b. Build final xreg matrices ───────────────────────────
-# train slice: starts at t=1 in the full series
-# test  slice: starts at t=TRAIN_N+1
-# is_holiday is appended as an exogenous regressor: it is
-# determined by the calendar (known in advance), so including
-# it in xreg_test causes no data leakage.
 
-xreg_train <- cbind(
-  make_weekly_fourier(TRAIN_N, K_FIXED, start_t = 1),
-  is_holiday = df$is_holiday[1:TRAIN_N]
-)
+# ── 7b. Build final xreg matrices with the chosen K ──────────
+xreg_final <- build_xreg(K_FIXED)
+xreg_train <- xreg_final$train
+xreg_valid <- xreg_final$valid
+xreg_test  <- xreg_final$test
 
-xreg_test <- cbind(
-  make_weekly_fourier(TEST_H, K_FIXED, start_t = TRAIN_N + 1),
-  is_holiday = df$is_holiday[(TRAIN_N + 1):nrow(df)]
-)
-
-cat("Using K =", K_FIXED, "weekly Fourier pair(s) + is_holiday regressor.\n")
+cat(sprintf("Using K = %d weekly Fourier pair(s) + is_holiday regressor.\n", K_FIXED))
 cat("xreg_train dim:", dim(xreg_train), "\n")
 cat("xreg_test  dim:", dim(xreg_test),  "\n")
 
 
-# ── 8. Model Fitting ─────────────────────────────────────────
-# auto.arima() searches over ARIMA(p,d,q)(P,0,Q)[24] with the
-# Fourier + holiday matrix as external regressors.
-# D=0 is enforced — see explanation in Section 6.
-# stepwise=FALSE + approximation=FALSE for the final fit:
-# exhaustive search over the full candidate space with exact
-# likelihood evaluation. This is slow (~hours on the full
-# training set) but produces a better-calibrated model order.
-# Set both back to TRUE only if you need a quick sanity check.
-cat("\nFitting SARIMA model on full training set — please wait ...\n")
-cat("(stepwise=FALSE, approximation=FALSE: this may take a while)\n")
+# ── 8. Final Model Fitting ────────────────────────────────────
+# REFIT_WITH_VALID = FALSE  → fit on train only (conservative default)
+# REFIT_WITH_VALID = TRUE   → fold validation into the final fit once
+#                             K is chosen (more data, no extra leakage)
+REFIT_WITH_VALID <- FALSE
+
+if (REFIT_WITH_VALID) {
+  ts_fit_final   <- ts(c(as.numeric(ts_train), as.numeric(ts_valid)),
+                       frequency = SEASON)
+  xreg_fit_final <- rbind(xreg_train, xreg_valid)
+  cat(sprintf("\nFitting final SARIMA on TRAIN + VALIDATION (%d hours) ...\n",
+              length(ts_fit_final)))
+} else {
+  ts_fit_final   <- ts_train
+  xreg_fit_final <- xreg_train
+  cat(sprintf("\nFitting final SARIMA on TRAIN only (%d hours) ...\n",
+              length(ts_fit_final)))
+}
+cat("(stepwise=TRUE, approximation=TRUE — set both to FALSE for exhaustive final fit)\n")
 
 fit <- auto.arima(
-  ts_train,
-  xreg          = xreg_train,
+  ts_fit_final,
+  xreg          = xreg_fit_final,
   seasonal      = TRUE,
-  stepwise      = TRUE,      # exhaustive search
-  approximation = TRUE,      # exact likelihood
-  d  = d_order,
-  D  = 0,                     # must stay 0 with Fourier xreg
+  stepwise      = TRUE,       # set FALSE for exhaustive search before submission
+  approximation = TRUE,       # set FALSE for exact likelihood before submission
+  d             = d_order,
+  D             = 0,
   max.p = 3, max.q = 3,
-  max.P = 2,  max.Q = 2,
+  max.P = MAX_P_SEASONAL,
+  max.Q = MAX_Q_SEASONAL,
   trace = TRUE
 )
 
@@ -260,47 +338,31 @@ print(summary(fit))
 
 
 # ── 9. Residual Diagnostics ───────────────────────────────────
-checkresiduals(fit)
 resid <- residuals(fit)
 
-# Ljung-Box at 2*SEASON (48h): standard check for daily residual
-# autocorrelation.
-lb_48 <- Box.test(
-  resid,
-  lag   = 2 * SEASON,
-  type  = "Ljung-Box",
-  fitdf = sum(fit$arma[1:4])
-)
+# Ljung-Box at lag 48 (2 x daily) and lag 168 (weekly).
+# If lb_168 fails (p < 0.05), increase K and refit.
+lb_48  <- Box.test(resid, lag = 2 * SEASON,   type = "Ljung-Box",
+                   fitdf = sum(fit$arma[1:4]))
+lb_168 <- Box.test(resid, lag = WEEKLY_PERIOD, type = "Ljung-Box",
+                   fitdf = sum(fit$arma[1:4]))
 
-# Ljung-Box at lag 168: specifically checks whether the weekly
-# seasonal signal has been absorbed. A p-value < 0.05 here
-# indicates weekly autocorrelation still leaking through —
-# increase K_MAX or check that xreg phase alignment is correct.
-lb_168 <- Box.test(
-  resid,
-  lag   = WEEKLY_PERIOD,
-  type  = "Ljung-Box",
-  fitdf = sum(fit$arma[1:4])
-)
-
-cat(sprintf("\nLjung-Box (lag=%d ): stat = %.4f, p = %.4f  (%s)\n",
+cat(sprintf("\nLjung-Box (lag=%3d): stat = %.4f, p = %.4f  (%s)\n",
             2 * SEASON, lb_48$statistic, lb_48$p.value,
-            ifelse(lb_48$p.value > 0.05,
+            ifelse(lb_48$p.value  > 0.05,
                    "residuals ~ white noise",
-                   "autocorrelation remains in residuals")))
-
-cat(sprintf("Ljung-Box (lag=%d): stat = %.4f, p = %.4f  (%s)\n",
+                   "daily autocorrelation remains")))
+cat(sprintf("Ljung-Box (lag=%3d): stat = %.4f, p = %.4f  (%s)\n",
             WEEKLY_PERIOD, lb_168$statistic, lb_168$p.value,
             ifelse(lb_168$p.value > 0.05,
                    "no weekly autocorrelation detected",
-                   "weekly autocorrelation remains — consider increasing K")))
+                   "weekly autocorrelation remains — consider larger K")))
 
-# Shapiro-Wilk on a random subsample (test requires n <= 5000)
 set.seed(42)
 sw_sample <- as.numeric(resid)
 if (length(sw_sample) > 5000) sw_sample <- sample(sw_sample, 5000)
 sw <- shapiro.test(sw_sample)
-cat(sprintf("Shapiro-Wilk: stat = %.4f, p = %.4f\n",
+cat(sprintf("Shapiro-Wilk        : stat = %.4f, p = %.4f\n",
             sw$statistic, sw$p.value))
 
 # 4-panel residual plot
@@ -308,29 +370,34 @@ png(file.path(output_dir, "sarima_residual_diagnostics.png"),
     width = 1200, height = 800, res = 130)
 par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
 
-plot(resid,
-     main = "Residuals over Time",
+plot(resid, main = "Residuals over Time",
      ylab = "Residual", xlab = "Time (hours)",
-     col  = "#2c7fb8", cex = 0.3)
+     col = "#2c7fb8", cex = 0.3)
 abline(h = 0, col = "red", lty = 2)
 
 h_info <- hist(resid, breaks = 60, plot = FALSE)
-hist(resid, breaks = 60,
-     col = "#756bb1", border = "white",
+hist(resid, breaks = 60, col = "#756bb1", border = "white",
      main = "Residual Distribution", xlab = "Residual")
 curve(dnorm(x, mean(resid), sd(resid)) *
         length(resid) * diff(h_info$breaks[1:2]),
       col = "red", lwd = 2, add = TRUE)
 
-acf(resid,  lag.max = 200, main = "ACF of Residuals (lag up to 200)")
-pacf(resid, lag.max = 200, main = "PACF of Residuals (lag up to 200)")
-
+acf(resid,  lag.max = 200, main = "ACF of Residuals (lag 0–200)")
+pacf(resid, lag.max = 200, main = "PACF of Residuals (lag 0–200)")
 dev.off()
 cat("Saved -> output/models/SARIMA/sarima_residual_diagnostics.png\n")
 
 
-# ── 10. Forecast ─────────────────────────────────────────────
+# ── 10. Forecast (into the untouched test window) ────────────
 fc <- forecast(fit, xreg = xreg_test, h = TEST_H)
+
+# Realign ts_test to fc$mean's time index to prevent the
+# "start cannot be after end" error in accuracy() that arises
+# when ts_train was built from a plain integer index and fit$x
+# carries a different clock than the ts_test built in Section 5.
+ts_test <- ts(tv_vec[(TRAIN_N + VALID_H + 1):N],
+              start     = stats::start(fc$mean),
+              frequency = SEASON)
 
 
 # ── 11. Accuracy Metrics ─────────────────────────────────────
@@ -339,22 +406,17 @@ acc <- accuracy(fc, ts_test)
 actual    <- as.numeric(ts_test)
 predicted <- as.numeric(fc$mean)
 
-# MAPE — guard against zero actuals to avoid division by zero.
-# Note: MAPE is inflated by near-zero overnight traffic counts
-# regardless of model quality; sMAPE and MASE are more reliable
-# for this series.
 mape <- mean(
   abs((actual - predicted) / ifelse(actual == 0, NA, actual)),
   na.rm = TRUE
 ) * 100
 
-# Symmetric MAPE — bounded and robust to near-zero actuals
 smape <- mean(
   2 * abs(actual - predicted) / (abs(actual) + abs(predicted) + 1e-8),
   na.rm = TRUE
 ) * 100
 
-cat("\n--- Forecast Accuracy (test set) ---\n")
+cat("\n--- Forecast Accuracy (test set — all hours) ---\n")
 cat(sprintf("ME    : %10.4f\n",    acc["Test set", "ME"]))
 cat(sprintf("RMSE  : %10.4f\n",    acc["Test set", "RMSE"]))
 cat(sprintf("MAE   : %10.4f\n",    acc["Test set", "MAE"]))
@@ -362,9 +424,35 @@ cat(sprintf("MAPE  : %10.4f %%\n", mape))
 cat(sprintf("sMAPE : %10.4f %%\n", smape))
 cat(sprintf("MASE  : %10.4f\n",    acc["Test set", "MASE"]))
 
+# ── 11b. Supplementary accuracy — observed hours only ────────
+if (n_imputed_in_test > 0) {
+  keep          <- test_imputed_idx == 0
+  actual_obs    <- actual[keep]
+  predicted_obs <- predicted[keep]
+  
+  rmse_obs  <- sqrt(mean((actual_obs - predicted_obs)^2))
+  mae_obs   <- mean(abs(actual_obs - predicted_obs))
+  mape_obs  <- mean(
+    abs((actual_obs - predicted_obs) / ifelse(actual_obs == 0, NA, actual_obs)),
+    na.rm = TRUE) * 100
+  smape_obs <- mean(
+    2 * abs(actual_obs - predicted_obs) /
+      (abs(actual_obs) + abs(predicted_obs) + 1e-8),
+    na.rm = TRUE) * 100
+  
+  cat(sprintf("\n--- Accuracy (observed hours only, n = %d / %d) ---\n",
+              sum(keep), TEST_H))
+  cat(sprintf("RMSE  : %10.4f\n", rmse_obs))
+  cat(sprintf("MAE   : %10.4f\n", mae_obs))
+  cat(sprintf("MAPE  : %10.4f %%\n", mape_obs))
+  cat(sprintf("sMAPE : %10.4f %%\n", smape_obs))
+} else {
+  rmse_obs <- mae_obs <- mape_obs <- smape_obs <- NA_real_
+}
+
 
 # ── 12. Forecast vs Actual Plot ──────────────────────────────
-test_dates <- df$date_time[(TRAIN_N + 1):nrow(df)]
+test_dates <- df$date_time[(TRAIN_N + VALID_H + 1):N]
 
 fc_df <- tibble(
   date_time = test_dates,
@@ -377,19 +465,16 @@ fc_df <- tibble(
 )
 
 p_fc <- ggplot(fc_df, aes(x = date_time)) +
-  geom_ribbon(aes(ymin = lo95, ymax = hi95),
-              fill = "#a6cee3", alpha = 0.4) +
-  geom_ribbon(aes(ymin = lo80, ymax = hi80),
-              fill = "#1f78b4", alpha = 0.3) +
-  geom_line(aes(y = actual),
-            colour = "#333333", linewidth = 0.5) +
-  geom_line(aes(y = forecast),
-            colour = "#e34a33", linewidth = 0.6, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lo95, ymax = hi95), fill = "#a6cee3", alpha = 0.4) +
+  geom_ribbon(aes(ymin = lo80, ymax = hi80), fill = "#1f78b4", alpha = 0.3) +
+  geom_line(aes(y = actual),   colour = "#333333", linewidth = 0.5) +
+  geom_line(aes(y = forecast), colour = "#e34a33", linewidth = 0.6,
+            linetype = "dashed") +
   labs(
-    title    = "SARIMA — 56-Day Forecast vs Actual (Test Set)",
+    title    = sprintf("SARIMA — %d-Day Test Forecast vs Actual  (K = %d)",
+                       TEST_H %/% 24, K_FIXED),
     subtitle = sprintf("RMSE = %.1f  |  MAE = %.1f  |  MAPE = %.2f%%  |  sMAPE = %.2f%%",
-                       acc["Test set", "RMSE"],
-                       acc["Test set", "MAE"],
+                       acc["Test set", "RMSE"], acc["Test set", "MAE"],
                        mape, smape),
     x       = "Date",
     y       = "Traffic Volume (vehicles / hr)",
@@ -404,22 +489,14 @@ cat("Saved -> output/models/SARIMA/sarima_forecast_vs_actual.png\n")
 
 
 # ── 13. First-Week Zoom Plot ─────────────────────────────────
-# A 56-day panel is dense at hourly resolution; a 7-day zoom
-# makes the daily pattern and forecast quality clearly visible.
-p_zoom <- ggplot(fc_df[1:(24 * 7), ], aes(x = date_time)) +
-  geom_ribbon(aes(ymin = lo95, ymax = hi95),
-              fill = "#a6cee3", alpha = 0.4) +
-  geom_ribbon(aes(ymin = lo80, ymax = hi80),
-              fill = "#1f78b4", alpha = 0.3) +
-  geom_line(aes(y = actual),
-            colour = "#333333", linewidth = 0.7) +
-  geom_line(aes(y = forecast),
-            colour = "#e34a33", linewidth = 0.7, linetype = "dashed") +
-  labs(
-    title = "SARIMA — First 7 Days of Test Window (Zoom)",
-    x     = "Date",
-    y     = "Traffic Volume (vehicles / hr)"
-  ) +
+p_zoom <- ggplot(fc_df[1:min(24 * 7, nrow(fc_df)), ], aes(x = date_time)) +
+  geom_ribbon(aes(ymin = lo95, ymax = hi95), fill = "#a6cee3", alpha = 0.4) +
+  geom_ribbon(aes(ymin = lo80, ymax = hi80), fill = "#1f78b4", alpha = 0.3) +
+  geom_line(aes(y = actual),   colour = "#333333", linewidth = 0.7) +
+  geom_line(aes(y = forecast), colour = "#e34a33", linewidth = 0.7,
+            linetype = "dashed") +
+  labs(title = "SARIMA — First 7 Days of Test Window (Zoom)",
+       x = "Date", y = "Traffic Volume (vehicles / hr)") +
   theme_minimal(base_size = 11)
 
 ggsave(file.path(output_dir, "sarima_forecast_week1_zoom.png"),
@@ -428,9 +505,8 @@ cat("Saved -> output/models/SARIMA/sarima_forecast_week1_zoom.png\n")
 
 
 # ── 14. Save Forecast CSV ────────────────────────────────────
-fc_out <- fc_df
+fc_out           <- fc_df
 fc_out$date_time <- format(fc_out$date_time, "%Y-%m-%d %H:%M:%S")
-
 write.csv(fc_out,
           file.path(output_dir, "sarima_forecast_results.csv"),
           row.names = FALSE)
@@ -449,13 +525,20 @@ summary_list <- list(
                           D = model_order[5],
                           Q = model_order[6],
                           s = SEASON),
-    fourier_K         = K_FIXED,
-    fourier_period    = WEEKLY_PERIOD,
-    xreg_cols         = colnames(xreg_train),
+    fourier_K      = K_FIXED,
+    fourier_period = WEEKLY_PERIOD,
+    xreg_cols      = colnames(xreg_train),
     AIC            = fit$aic,
     AICc           = fit$aicc,
     BIC            = fit$bic,
     log_likelihood = fit$loglik
+  ),
+  tuning = list(
+    tuned_on_validation = TUNE_K,
+    k_grid_searched     = K_GRID,
+    chosen_K            = K_FIXED,
+    validation_rmse     = round(rmse_vec, 4),
+    n_imputed_in_valid  = n_imputed_in_valid
   ),
   stationarity = list(
     ADF_pvalue  = round(adf_res$p.value,  4),
@@ -476,10 +559,23 @@ summary_list <- list(
     sMAPE = round(smape, 4),
     MASE  = round(acc["Test set", "MASE"], 4)
   ),
+  accuracy_observed_only = list(
+    n_imputed_in_test = n_imputed_in_test,
+    RMSE  = if (!is.na(rmse_obs))  round(rmse_obs,  4) else NA,
+    MAE   = if (!is.na(mae_obs))   round(mae_obs,   4) else NA,
+    MAPE  = if (!is.na(mape_obs))  round(mape_obs,  4) else NA,
+    sMAPE = if (!is.na(smape_obs)) round(smape_obs, 4) else NA
+  ),
   split = list(
-    train_n = TRAIN_N,
-    test_h  = TEST_H,
-    season  = SEASON
+    total_n          = N,
+    train_n          = TRAIN_N,
+    valid_h          = VALID_H,
+    test_h           = TEST_H,
+    train_pct        = round(100 * TRAIN_N / N, 1),
+    valid_pct        = round(100 * VALID_H / N, 1),
+    test_pct         = round(100 * TEST_H  / N, 1),
+    season           = SEASON,
+    refit_with_valid = REFIT_WITH_VALID
   )
 )
 
@@ -491,7 +587,7 @@ cat("Saved -> output/models/SARIMA/sarima_model_summary.json\n")
 # ── 16. Save Model Object ────────────────────────────────────
 saveRDS(fit, file.path(output_dir, "sarima_model.rds"))
 cat("Saved -> output/models/SARIMA/sarima_model.rds\n")
-cat("(Reload later with: fit <- readRDS('output/models/SARIMA/sarima_model.rds'))\n")
+cat("(Reload with: fit <- readRDS('output/models/SARIMA/sarima_model.rds'))\n")
 
 
 # ── 17. Done ─────────────────────────────────────────────────

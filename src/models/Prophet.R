@@ -118,20 +118,40 @@ if (n_imputed_in_test > 0) {
 #   - yearly         has ~3 full cycles to learn from here, unlike
 #                    SARIMA/HW, which can't represent it at all
 #     within a single ts() seasonal period
-# seasonality.mode = "additive" is Prophet's default and a
-# reasonable start for this series; switch to "multiplicative"
-# if seasonal swings visibly scale with the trend level once you
-# inspect eda_01_timeseries_full.png from preprocessing.R.
+# seasonality.mode = "additive" is Prophet's default. Given the residual
+# autocorrelation and weak accuracy you're seeing, also try switching this to
+# "multiplicative" — traffic's daily/weekly swings likely scale with the
+# overall volume level (e.g. holidays and low-traffic hours have much smaller
+# absolute peak-to-trough swings than a normal weekday), which additive mode
+# can't represent. Compare both against eda_01_timeseries_full.png from
+# preprocessing.R: if the seasonal amplitude visibly grows and shrinks with
+# the trend level, multiplicative is the better fit.
 cat("\nFitting Prophet model on training set ...\n")
+
+# Daily/weekly seasonality are added via add_seasonality() with explicit
+# Fourier order rather than the daily.seasonality=TRUE/weekly.seasonality=TRUE
+# shortcuts. Those shortcuts default to low-order harmonics (4 for daily, 3
+# for weekly) that were tuned for smoother business-style series — traffic's
+# sharp morning/evening commute peaks need more harmonics to be represented
+# without being smeared into a single blob. Yearly is left on the built-in
+# default (order 10), which is normally enough for a broad seasonal trend.
+#
+# If Ljung-Box on the residuals (Section 8) still shows strong autocorrelation
+# at 48h/168h after this change, try raising these further (diminishing
+# returns and overfitting risk climb past ~15-20).
+DAILY_FOURIER_ORDER  <- 10
+WEEKLY_FOURIER_ORDER <- 6
 
 m <- prophet(
   yearly.seasonality  = TRUE,
-  weekly.seasonality  = TRUE,
-  daily.seasonality   = TRUE,
+  weekly.seasonality  = FALSE,   # replaced below with explicit fourier.order
+  daily.seasonality   = FALSE,   # replaced below with explicit fourier.order
   seasonality.mode    = "additive",
   interval.width      = 0.95,
   fit                 = FALSE
 )
+m <- add_seasonality(m, name = "daily",  period = 1, fourier.order = DAILY_FOURIER_ORDER)
+m <- add_seasonality(m, name = "weekly", period = 7, fourier.order = WEEKLY_FOURIER_ORDER)
 m <- add_regressor(m, "is_holiday")
 # NOTE: prophet's predict.prophet()/fit.prophet() expect a plain data.frame.
 # df_train came through dplyr pipes (transmute/slice), which can leave it as
