@@ -1,199 +1,340 @@
-# ============================================================
-# Hyperparameter Tuning for LSTM Forecasting of Hourly Traffic Volume
-# Input: data/processed/traffic_volume_processed.csv (output of preprocessing.R)
+# =============================================================================
+# tune.R — SELF-CONTAINED hyperparameter tuning for the traffic-volume LSTM.
+#          No source() of any other file. Just: Rscript tune.R
 #
-# Grid-searches the LSTM's key tunable parameters, scores each combination
-# on the VALIDATION set (never the test set -- that stays held out until
-# the very end), and saves the search results plus a comparison figure.
-# The final tuned model itself (training curve, test metrics,
-# actual-vs-predicted) is built separately in lstm.R using the best
-# configuration found here.
-# ============================================================
-source("src/models/lstm_common.R")
+#   Data     : data/processed/traffic_volume_processed.csv
+#   Protocol : 85% tuning pool / 15% locked test (test is NEVER touched here)
+#   CV       : expanding-window (anchored) rolling origin, 4 folds, purged gap
+#   Ranking  : mean MASE across all 4 folds
+#   Output   : results/tuning_results.csv   (appended after EVERY config)
+#
+#   Restartable: a config already in the CSV is skipped. Ctrl-C is safe.
+# =============================================================================
 
-library(keras3)
-library(tensorflow)
-library(ggplot2)
+suppressPackageStartupMessages(library(keras3))
 
-set.seed(42)
-tensorflow::set_random_seed(42)
+# =============================================================================
+# 1. SETTINGS
+# =============================================================================
+CSV_PATH <- "data/processed/traffic_volume_processed.csv"
+OUT_PATH <- "results/tuning_results.csv"
 
-if (!dir.exists(RESULTS_DIR)) dir.create(RESULTS_DIR, recursive = TRUE)
+TEST_FRAC <- 0.15     # protocol — never tuned
+N_FOLDS <- 4L       # protocol — never tuned
+ASSESS <- 2190L    # protocol — 3-month validation window
+SEASON_M <- 168L     # weekly seasonality: naive baseline + MASE denominator
+PRIMARY <- "MASE"   # metric used to rank configurations
 
+MAX_CONFIGS <- Inf    # set to e.g. 2 for a timing smoke test, then back to Inf
 
-# ---- 1. Load data and engineer features ----
-df <- load_processed()
-df <- engineer_features(df)
-
-cat("Loaded", nrow(df), "rows spanning", as.character(min(df$date_time)),
-    "to", as.character(max(df$date_time)), "\n")
-
-model_df <- df[, FEATURE_COLS]
-
-
-# ---- 2. Chronological train / validation / test split ----
-# Boundaries come from lstm_common.R so tuning, final training, and
-# forecasting cannot disagree about which rows are which.
-train_idx <- df$date_time <= TRAIN_END
-val_idx   <- df$date_time > TRAIN_END & df$date_time <= VAL_END
-test_idx  <- df$date_time > VAL_END
-
-cat("Train:", sum(train_idx), " Val:", sum(val_idx), " Test:", sum(test_idx), "\n")
-
-
-# ---- 3. Scaling (fitted on TRAIN ONLY) ----
-# The whole frame is scaled in one pass with the training parameters, so the
-# context rows handed to make_sequences() are on the same scale as the split
-# they precede.
-scale_params <- fit_scaler(model_df[train_idx, ])
-scaled_all   <- apply_scale(model_df, scale_params)
-
-train_scaled <- scaled_all[train_idx, ]
-val_scaled   <- scaled_all[val_idx, ]
-
-
-# ---- 4. Define the search grid ----
-# Each row trains a full model, so the grid is kept deliberately small.
-# look_back is the parameter of real interest: 24 asks whether one day of
-# history is enough, 168 whether the model needs a full week to see the
-# weekday/weekend contrast.
-grid <- expand.grid(
-  look_back     = c(24, 168),
-  lstm_units    = c(32, 64),
-  dropout_rate  = c(0.2, 0.3),
+# --- THE SEARCH SPACE -------------------------------------------------------
+GRID <- list(
+  lookback      = c(48L, 168L),
+  units         = c(64L),
+  n_layers      = c(1L),
+  dropout       = c(0.0, 0.1, 0.2, 0.3),
   learning_rate = c(0.001),
-  batch_size    = c(64),
-  stringsAsFactors = FALSE
+  batch_size    = c(64L),
+  loss          = c("mse"),
+  target_log    = c(FALSE)      # see the write-up: FALSE chosen deliberately
+)
+TUNABLE <- names(GRID)
+
+# --- FIXED for every configuration ------------------------------------------
+FIXED <- list(
+  horizon       = 1L,
+  clipnorm      = 1.0,
+  beta_2        = 0.999,
+  epochs        = 100L,
+  patience_stop = 10L,
+  patience_lr   = 4L,
+  lr_factor     = 0.5,
+  seed          = 42L
 )
 
-cat("\nSearching", nrow(grid), "hyperparameter combinations...\n")
-print(grid)
+# =============================================================================
+# 2. DATA — loaded once, verified rather than assumed
+# =============================================================================
+cat("Loading data ...\n")
+DF <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
+DF$date_time <- as.POSIXct(DF$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
+DF <- DF[order(DF$date_time), ]
+stopifnot(
+  "NA values present"           = !anyNA(DF),
+  "grid is not strictly hourly" = all(as.numeric(diff(DF$date_time), units = "hours") == 1),
+  "duplicate timestamps"        = !any(duplicated(DF$date_time))
+)
 
-# Sequences depend only on look_back, so build each look_back's sequences
-# once and reuse them across the other hyperparameters.
-seq_cache <- list()
-get_sequences <- function(look_back) {
-  key <- as.character(look_back)
-  if (is.null(seq_cache[[key]])) {
-    seq_cache[[key]] <<- list(
-      train = make_sequences(train_scaled, look_back),
-      # Validation is windowed with the tail of training as context, so every
-      # validation hour is scored instead of the first look_back hours being
-      # consumed as warm-up.
-      val   = make_sequences(val_scaled, look_back,
-                             context = tail(train_scaled, look_back))
+# Cyclical encoding: raw hour 23 and hour 0 are adjacent in reality but
+# maximally distant numerically. sin/cos pairs fix that.
+dow <- match(DF$day_of_week,
+             c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+stopifnot("unrecognised day_of_week" = !anyNA(dow))
+cyc <- function(x, p) cbind(sin(2 * pi * x / p), cos(2 * pi * x / p))
+
+FEAT <- cbind(
+  traffic    = DF$traffic_volume,
+  temp       = DF$temp,
+  rain       = log1p(DF$rain_1h),      # zero-inflated with a long tail
+  snow       = log1p(DF$snow_1h),
+  clouds     = DF$clouds_all,
+  is_holiday = DF$is_holiday,
+  cyc(DF$hour,      24),
+  cyc(dow - 1,       7),
+  cyc(DF$month - 1, 12)
+)
+colnames(FEAT) <- c("traffic", "temp", "rain", "snow", "clouds", "is_holiday",
+                    "hour_sin", "hour_cos", "dow_sin", "dow_cos", "month_sin", "month_cos")
+
+TARGET     <- DF$traffic_volume
+N          <- nrow(DF)
+N_FEAT     <- ncol(FEAT)
+TEST_START <- floor((1 - TEST_FRAC) * N) + 1L
+POOL_END   <- TEST_START - 1L
+
+cat(sprintf("rows = %d | %s -> %s | features = %d\n",
+            N, format(min(DF$date_time)), format(max(DF$date_time)), N_FEAT))
+cat(sprintf("tuning pool = 1..%d | TEST = %d..%d (locked, not used in this script)\n\n",
+            POOL_END, TEST_START, N))
+
+# =============================================================================
+# 3. FOLDS
+#
+# gap = lookback + horizon - 1. Without it the first validation input window
+# overlaps rows the model trained on, and val loss is partly train loss.
+#
+# NOTE: va_end always equals POOL_END regardless of gap, so the validation
+# windows are IDENTICAL for every configuration. Only the training end shifts.
+# Comparisons across the grid stay fair even when lookback varies.
+# =============================================================================
+make_folds <- function(cfg) {
+  gap     <- cfg$lookback + cfg$horizon - 1L
+  initial <- POOL_END - N_FOLDS * ASSESS - gap
+  stopifnot("fold-1 training set too small" = initial > 4L * (cfg$lookback + cfg$horizon))
+  f <- lapply(seq_len(N_FOLDS), function(i) {
+    tr_end <- initial + (i - 1L) * ASSESS
+    va_st  <- tr_end + gap + 1L
+    list(train = 1:tr_end, val = va_st:(va_st + ASSESS - 1L))
+  })
+  stopifnot(
+    "not anchored at row 1" = all(vapply(f, function(x) min(x$train) == 1L, logical(1))),
+    "wrong purge gap"       = all(vapply(f, function(x) min(x$val) - max(x$train) - 1L == gap, logical(1))),
+    "folds do not tile"     = max(f[[N_FOLDS]]$val) == POOL_END
+  )
+  f
+}
+
+# =============================================================================
+# 4. WINDOWING AND SCALING
+# =============================================================================
+make_windows <- function(rows, cfg) {
+  m  <- FEAT[rows, , drop = FALSE]
+  ns <- length(rows) - cfg$lookback - cfg$horizon + 1L
+  stopifnot("slice shorter than lookback + horizon" = ns > 0)
+  x <- array(0, dim = c(ns, cfg$lookback, N_FEAT))
+  for (i in seq_len(ns)) x[i, , ] <- m[i:(i + cfg$lookback - 1L), , drop = FALSE]
+  list(x   = x,
+       y   = TARGET[rows][(cfg$lookback + cfg$horizon):length(rows)],
+       idx = rows[(cfg$lookback + cfg$horizon):length(rows)])
+}
+
+# z-score from TRAIN rows only — never the whole series.
+make_scaler <- function(train_rows, cfg) {
+  mu <- colMeans(FEAT[train_rows, , drop = FALSE])
+  sd <- apply(FEAT[train_rows, , drop = FALSE], 2, stats::sd)
+  sd[sd == 0] <- 1
+  yt <- if (cfg$target_log) log1p(TARGET[train_rows]) else TARGET[train_rows]
+  mu_y <- mean(yt)
+  sd_y <- stats::sd(yt)
+  list(
+    x_apply = function(a) {
+      for (j in seq_len(N_FEAT)) a[, , j] <- (a[, , j] - mu[j]) / sd[j]
+      a
+    },
+    y_apply = function(v) ((if (cfg$target_log) log1p(v) else v) - mu_y) / sd_y,
+    y_inv   = function(v) {
+      z <- v * sd_y + mu_y
+      pmax(0, if (cfg$target_log) expm1(z) else z)
+    }
+  )
+}
+
+# =============================================================================
+# 5. MODEL
+# =============================================================================
+build_model <- function(cfg) {
+  m <- keras_model_sequential(input_shape = c(cfg$lookback, N_FEAT))
+  if (cfg$n_layers >= 2L)
+    m <- m |> layer_lstm(units = cfg$units, dropout = cfg$dropout,
+                         recurrent_dropout = 0, return_sequences = TRUE)
+  m |>
+    layer_lstm(units = cfg$units, dropout = cfg$dropout, recurrent_dropout = 0) |>
+    layer_dense(units = cfg$horizon) |>
+    compile(optimizer = optimizer_adam(learning_rate = cfg$learning_rate,
+                                       beta_2   = cfg$beta_2,
+                                       clipnorm = cfg$clipnorm),
+            loss = cfg$loss, metrics = "mae")
+}
+
+# =============================================================================
+# 6. METRICS — all on the ORIGINAL traffic_volume scale
+#
+# MASE denominator = in-sample seasonal-naive MAE on the TRAINING rows
+# (Hyndman & Koehler 2006). It must not come from the evaluation set.
+#   MASE < 1 -> better than "same hour last week";  = 1 -> equal;  > 1 -> worse.
+# =============================================================================
+mase_scale <- function(train_rows, m = SEASON_M) {
+  y <- TARGET[train_rows]
+  mean(abs(y[(m + 1):length(y)] - y[1:(length(y) - m)]))
+}
+
+metrics <- function(actual, pred, scale) {
+  e <- actual - pred
+  nz <- actual != 0
+  c(MAE   = mean(abs(e)),
+    RMSE  = sqrt(mean(e^2)),
+    MAPE  = if (any(nz)) mean(abs(e[nz] / actual[nz])) * 100 else NA_real_,
+    sMAPE = mean(2 * abs(e) / (abs(actual) + abs(pred) + 1e-9)) * 100,
+    MASE  = mean(abs(e)) / scale,
+    zeros = sum(!nz))
+}
+
+# =============================================================================
+# 7. ONE FOLD — fresh weights every call, so nothing leaks between folds
+# =============================================================================
+run_fold <- function(cfg, train_rows, eval_rows) {
+  set_random_seed(cfg$seed)
+  sc  <- make_scaler(train_rows, cfg)
+  tr  <- make_windows(train_rows, cfg)
+  ev  <- make_windows(eval_rows,  cfg)
+  xtr <- sc$x_apply(tr$x)
+  xev <- sc$x_apply(ev$x)
+
+  model <- build_model(cfg)
+  h <- model |> fit(
+    xtr, sc$y_apply(tr$y),
+    validation_data = list(xev, sc$y_apply(ev$y)),
+    epochs = cfg$epochs, batch_size = cfg$batch_size,
+    shuffle = TRUE, verbose = 2,
+    callbacks = list(
+      callback_early_stopping(monitor = "val_loss", patience = cfg$patience_stop,
+                              restore_best_weights = TRUE),
+      callback_reduce_lr_on_plateau(monitor = "val_loss", factor = cfg$lr_factor,
+                                    patience = cfg$patience_lr, min_lr = 1e-5)
     )
+  )
+
+  pred <- sc$y_inv(as.numeric(predict(model, xev, verbose = 0)))
+  out  <- list(metrics    = metrics(ev$y, pred, mase_scale(train_rows)),
+               best_epoch = which.min(h$metrics$val_loss))
+  rm(xtr, xev, tr, ev, model)
+  gc(verbose = FALSE)   # free ~300 MB before the next fold
+  out
+}
+
+# =============================================================================
+# 8. GRID, RESUME, CSV
+# =============================================================================
+dir.create("results", showWarnings = FALSE)
+
+cfg_key <- function(cfg) {
+  paste(vapply(TUNABLE, function(k) as.character(cfg[[k]]), ""), collapse = "|")
+}
+
+as_cfg <- function(row) {
+  cfg <- FIXED
+  for (k in TUNABLE) cfg[[k]] <- row[[k]]
+  cfg$lookback   <- as.integer(cfg$lookback)
+  cfg$units      <- as.integer(cfg$units)
+  cfg$n_layers   <- as.integer(cfg$n_layers)
+  cfg$batch_size <- as.integer(cfg$batch_size)
+  cfg$loss       <- as.character(cfg$loss)
+  cfg$target_log <- as.logical(cfg$target_log)
+  cfg
+}
+
+append_row <- function(row, path) {
+  write.table(row, path, sep = ",", row.names = FALSE,
+              col.names = !file.exists(path), append = file.exists(path), qmethod = "double")
+}
+
+done <- if (file.exists(OUT_PATH)) read.csv(OUT_PATH, stringsAsFactors = FALSE)$key else character(0)
+
+TODO <- expand.grid(GRID, stringsAsFactors = FALSE)
+TODO <- TODO[order(TODO$lookback, TODO$units, TODO$dropout), , drop = FALSE]  # cheapest first
+if (is.finite(MAX_CONFIGS)) TODO <- TODO[seq_len(min(MAX_CONFIGS, nrow(TODO))), , drop = FALSE]
+
+cat(sprintf("== %d configurations x %d folds = %d model fits ==\n",
+            nrow(TODO), N_FOLDS, nrow(TODO) * N_FOLDS))
+if (length(done)) cat(sprintf("   %d already in %s, will be skipped\n", length(done), OUT_PATH))
+cat("\n")
+
+# =============================================================================
+# 9. RUN
+# =============================================================================
+times <- numeric(0)
+
+for (i in seq_len(nrow(TODO))) {
+  cfg <- as_cfg(TODO[i, , drop = FALSE])
+  key <- cfg_key(cfg)
+
+  if (key %in% done) {
+    cat(sprintf("[%2d/%2d] %-34s skip (already done)\n", i, nrow(TODO), key))
+    next
   }
-  seq_cache[[key]]
+  cat(sprintf("[%2d/%2d] %-34s ", i, nrow(TODO), key))
+  flush.console()
+
+  t0 <- Sys.time()
+  res <- tryCatch({
+    folds <- make_folds(cfg)
+    lapply(seq_len(N_FOLDS), function(f) run_fold(cfg, folds[[f]]$train, folds[[f]]$val))
+  }, error = function(e) {
+    cat("FAILED:", conditionMessage(e), "\n")
+    NULL
+  })
+  if (is.null(res)) next
+
+  secs <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+  times <- c(times, secs)
+  M <- do.call(rbind, lapply(res, function(r) r$metrics))
+
+  row <- data.frame(key = key, timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+                    stringsAsFactors = FALSE)
+  for (k in TUNABLE) row[[k]] <- cfg[[k]]
+  for (m in c("MAE", "RMSE", "MAPE", "sMAPE", "MASE")) {
+    row[[paste0("mean_", m)]] <- round(mean(M[, m], na.rm = TRUE), 4)
+    row[[paste0("sd_",   m)]] <- round(stats::sd(M[, m]), 4)
+  }
+  for (f in seq_len(N_FOLDS)) {
+    row[[paste0("f", f, "_MAE")]]  <- round(M[f, "MAE"],  3)
+    row[[paste0("f", f, "_MASE")]] <- round(M[f, "MASE"], 4)
+  }
+  row$best_epochs <- paste(vapply(res, function(r) r$best_epoch, integer(1)), collapse = ";")
+  row$secs        <- round(secs, 1)
+
+  append_row(row, OUT_PATH)   # written immediately — a crash never loses finished work
+
+  eta_min <- mean(times) * (nrow(TODO) - i) / 60
+  cat(sprintf("MASE %.4f (sd %.4f)  MAE %.1f  RMSE %.1f  [%.0fs, ETA %.0f min]\n",
+              row$mean_MASE, row$sd_MASE, row$mean_MAE, row$mean_RMSE, secs, eta_min))
 }
 
+# =============================================================================
+# 10. LEADERBOARD
+# =============================================================================
+r <- read.csv(OUT_PATH, stringsAsFactors = FALSE)
+r <- r[order(r[[paste0("mean_", PRIMARY)]]), ]
 
-# ---- 5. Grid search loop (scored on VALIDATION, never test) ----
-build_model <- function(look_back, n_features, lstm_units, dropout_rate, learning_rate) {
-  model <- keras_model_sequential() %>%
-    layer_lstm(units = lstm_units, input_shape = c(look_back, n_features),
-               return_sequences = FALSE) %>%
-    layer_dropout(rate = dropout_rate) %>%
-    layer_dense(units = lstm_units / 2, activation = "relu") %>%
-    layer_dense(units = 1)
+cat(sprintf("\n== Leaderboard: all %d configs, ranked by mean %s ==\n", nrow(r), PRIMARY))
+print(r[, c("lookback", "units", "n_layers", "dropout",
+            "mean_MASE", "sd_MASE", "mean_MAE", "mean_RMSE", "mean_sMAPE", "secs")],
+      row.names = FALSE, digits = 5)
 
-  model %>% compile(
-    optimizer = optimizer_adam(learning_rate = learning_rate),
-    loss = "mse",
-    metrics = list("mae")
-  )
-  model
-}
-
-results_list <- list()
-
-for (i in seq_len(nrow(grid))) {
-  cfg <- grid[i, ]
-  cat("\n---- Config", i, "/", nrow(grid), "----\n")
-  print(cfg)
-
-  seqs <- get_sequences(cfg$look_back)
-  n_features <- dim(seqs$train$x)[3]
-
-  # Re-seeded per configuration so the comparison reflects the
-  # hyperparameters rather than a lucky weight initialization.
-  set.seed(42)
-  tensorflow::set_random_seed(42)
-
-  model <- build_model(cfg$look_back, n_features, cfg$lstm_units,
-                       cfg$dropout_rate, cfg$learning_rate)
-
-  early_stop <- callback_early_stopping(
-    monitor = "val_loss", patience = 8, restore_best_weights = TRUE
-  )
-
-  history <- model %>% fit(
-    x = seqs$train$x, y = seqs$train$y,
-    validation_data = list(seqs$val$x, seqs$val$y),
-    epochs = 50,
-    batch_size = cfg$batch_size,
-    callbacks = list(early_stop),
-    verbose = 0
-  )
-
-  best_epoch <- which.min(history$metrics$val_loss)
-  val_loss   <- history$metrics$val_loss[[best_epoch]]
-  val_mae    <- history$metrics$val_mae[[best_epoch]]
-
-  results_list[[i]] <- data.frame(
-    look_back     = cfg$look_back,
-    lstm_units    = cfg$lstm_units,
-    dropout_rate  = cfg$dropout_rate,
-    learning_rate = cfg$learning_rate,
-    batch_size    = cfg$batch_size,
-    val_loss_mse  = val_loss,
-    val_mae       = val_mae,
-    # Recorded so lstm_forecast.R can refit on all observed data for a
-    # matching number of epochs, where no validation set is left to early-stop on.
-    best_epoch    = best_epoch,
-    n_epochs_run  = length(history$metrics$val_loss)
-  )
-
-  cat("Val MSE:", round(val_loss, 5), " Val MAE:", round(val_mae, 5),
-      " best epoch:", best_epoch, "\n")
-
-  rm(model, history)
-  gc()
-}
-
-tuning_results <- do.call(rbind, results_list) %>% arrange(val_loss_mse)
-
-cat("\n==== Tuning results (sorted by validation MSE) ====\n")
-print(tuning_results)
-write.csv(tuning_results, file.path(RESULTS_DIR, "lstm_tuning_results.csv"), row.names = FALSE)
-
-
-# ---- 6. Tuning comparison figure ----
-# One bar per configuration tried, sorted from best (lowest validation MSE)
-# to worst, with the selected configuration highlighted -- this shows which
-# hyperparameter combination won and by how much.
-plot_df <- tuning_results %>%
-  mutate(
-    config_label = sprintf("LB%d U%d D%.1f", look_back, lstm_units, dropout_rate),
-    config_label = factor(config_label, levels = config_label[order(-val_loss_mse)]),
-    is_best = row_number() == 1
-  )
-
-p <- ggplot(plot_df, aes(x = config_label, y = val_loss_mse, fill = is_best)) +
-  geom_col(width = 0.65) +
-  geom_text(aes(label = signif(val_loss_mse, 3)), hjust = -0.15, size = 3) +
-  coord_flip() +
-  scale_fill_manual(values = c("FALSE" = "grey65", "TRUE" = "#1f77b4"), guide = "none") +
-  labs(title = "LSTM Hyperparameter Search: Validation MSE by Configuration",
-       x = "Configuration (Look-back, Units, Dropout)",
-       y = "Validation MSE (scaled units)") +
-  expand_limits(y = max(plot_df$val_loss_mse) * 1.15) +
-  theme_minimal(base_size = 11)
-
-ggsave(file.path(RESULTS_DIR, "lstm_tuning_comparison.png"), plot = p,
-       width = 7, height = 4.5, dpi = 300)
-
-cat("\nBest config (lowest validation MSE):\n")
-print(tuning_results[1, ])
-
-cat("\nSaved tuning results and comparison figure to:", RESULTS_DIR, "\n")
+best <- r[1, ]
+cat(sprintf("\nBEST: lookback=%d units=%d n_layers=%d dropout=%.1f\n",
+            best$lookback, best$units, best$n_layers, best$dropout))
+cat(sprintf("      mean MASE %.4f (sd %.4f) | mean MAE %.2f | best epochs %s\n",
+            best$mean_MASE, best$sd_MASE, best$mean_MAE, best$best_epochs))
+cat(sprintf("\nFull results: %s\n", OUT_PATH))
+cat("Next: put these values into lstm.R and run it once to get the TEST score.\n")
