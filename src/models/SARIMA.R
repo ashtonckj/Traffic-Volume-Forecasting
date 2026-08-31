@@ -230,7 +230,7 @@ MAX_Q_SEASONAL <- 4
 # Set TUNE_K = TRUE to run the search; TUNE_K = FALSE uses K_FIXED.
 
 TUNE_K  <- TRUE
-K_FIXED <- 7      # fallback if TUNE_K = FALSE
+K_FIXED <- 28      # fallback if TUNE_K = FALSE
 K_GRID  <- c(7, 14, 21, 28)
 
 if (TUNE_K) {
