@@ -1,3 +1,0 @@
-"Model","look_back","lstm_units","dropout_rate","learning_rate","batch_size","best_epoch","n_test","MAE","MSE","RMSE","MAPE"
-"LSTM (tuned)",168,64,0.2,0.001,64,25,2208,151.1,47700.87,218.41,7.12
-"Seasonal Naive (benchmark)",168,NA,NA,NA,NA,NA,2208,261.77,305553.91,552.77,10.6

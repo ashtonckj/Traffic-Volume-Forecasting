@@ -83,10 +83,11 @@ cat(sprintf("           TEST      = %d..%d (%s .. %s, %.1f%%)\n\n",
 # 3. HELPERS
 make_windows <- function(rows) {
   m <- FEATURE[rows, , drop = FALSE]
-  ns <- length(rows) - cfg$lookback - cfg$horizon + 1L
-  stopifnot(ns > 0)
-  x <- array(0, dim = c(ns, cfg$lookback, N_FEATURE))
-  for (i in seq_len(ns)) x[i, , ] <- m[i:(i + cfg$lookback - 1L), , drop = FALSE]
+  n_samples <- length(rows) - cfg$lookback - cfg$horizon + 1L
+  stopifnot(n_samples > 0)
+  x <- array(0, dim = c(n_samples, cfg$lookback, N_FEATURE))
+  for (i in seq_len(n_samples))
+    x[i, , ] <- m[i:(i + cfg$lookback - 1L), , drop = FALSE]
   list(x = x,
        y = TARGET[rows][(cfg$lookback + cfg$horizon):length(rows)],
        idx = rows[(cfg$lookback + cfg$horizon):length(rows)])
@@ -173,8 +174,7 @@ cat(sprintf("\nimprovement over seasonal-naive: MAE %.1f%%  RMSE %.1f%%\n",
             100 * (1 - out["LSTM", "MAE"] / out["seasonal-naive", "MAE"]),
             100 * (1 - out["LSTM", "RMSE"] / out["seasonal-naive", "RMSE"])))
 if (out["LSTM", "zeros"] > 0)
-  cat(sprintf("note: %d test rows had traffic_volume == 0, excluded from MAPE only.\n",
-              out["LSTM", "zeros"]))
+  cat(sprintf("note: %d test rows had traffic_volume == 0, excluded from MAPE only.\n", out["LSTM", "zeros"]))
 cat("==============================================================\n")
 
 # 6. SAVE
