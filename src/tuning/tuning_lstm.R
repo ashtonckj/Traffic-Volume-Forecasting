@@ -20,23 +20,23 @@ CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 OUT_PATH <- "results/tuning_results.csv"
 
 TEST_FRAC <- 0.15     # protocol — never tuned
-N_FOLDS <- 4L       # protocol — never tuned
-ASSESS <- 2190L    # protocol — 3-month validation window
-SEASON_M <- 168L     # weekly seasonality: naive baseline + MASE denominator
-PRIMARY <- "MASE"   # metric used to rank configurations
+N_FOLDS <- 4L         # protocol — never tuned
+ASSESS <- 2190L       # protocol — 3-month validation window
+SEASON_M <- 168L      # weekly seasonality: naive baseline + MASE denominator
+PRIMARY <- "MASE"     # metric used to rank configurations
 
 MAX_CONFIGS <- Inf    # set to e.g. 2 for a timing smoke test, then back to Inf
 
 # --- THE SEARCH SPACE -------------------------------------------------------
 GRID <- list(
-  lookback      = c(48L, 168L),
-  units         = c(64L),
-  n_layers      = c(1L),
-  dropout       = c(0.0, 0.1, 0.2, 0.3),
-  learning_rate = c(0.001),
+  lookback      = c(48L),
+  units         = c(64L, 128L),
+  n_layers      = c(1L, 2L),
+  dropout       = c(0.0),
+  learning_rate = c(3e-4, 1e-3, 3e-3),
   batch_size    = c(64L),
   loss          = c("mse"),
-  target_log    = c(FALSE)      # see the write-up: FALSE chosen deliberately
+  target_log    = c(FALSE)
 )
 TUNABLE <- names(GRID)
 
@@ -56,44 +56,44 @@ FIXED <- list(
 # 2. DATA — loaded once, verified rather than assumed
 # =============================================================================
 cat("Loading data ...\n")
-DF <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
-DF$date_time <- as.POSIXct(DF$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
-DF <- DF[order(DF$date_time), ]
+df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
+df$date_time <- as.POSIXct(df$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
+df <- df[order(df$date_time), ]
 stopifnot(
-  "NA values present"           = !anyNA(DF),
-  "grid is not strictly hourly" = all(as.numeric(diff(DF$date_time), units = "hours") == 1),
-  "duplicate timestamps"        = !any(duplicated(DF$date_time))
+  "NA values present"           = !anyNA(df),
+  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1),
+  "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
 # Cyclical encoding: raw hour 23 and hour 0 are adjacent in reality but
 # maximally distant numerically. sin/cos pairs fix that.
-dow <- match(DF$day_of_week,
+dow <- match(df$day_of_week,
              c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
 stopifnot("unrecognised day_of_week" = !anyNA(dow))
 cyc <- function(x, p) cbind(sin(2 * pi * x / p), cos(2 * pi * x / p))
 
 FEAT <- cbind(
-  traffic    = DF$traffic_volume,
-  temp       = DF$temp,
-  rain       = log1p(DF$rain_1h),      # zero-inflated with a long tail
-  snow       = log1p(DF$snow_1h),
-  clouds     = DF$clouds_all,
-  is_holiday = DF$is_holiday,
-  cyc(DF$hour,      24),
+  traffic    = df$traffic_volume,
+  temp       = df$temp,
+  rain       = log1p(df$rain_1h),      # zero-inflated with a long tail
+  snow       = log1p(df$snow_1h),
+  clouds     = df$clouds_all,
+  is_holiday = df$is_holiday,
+  cyc(df$hour,      24),
   cyc(dow - 1,       7),
-  cyc(DF$month - 1, 12)
+  cyc(df$month - 1, 12)
 )
 colnames(FEAT) <- c("traffic", "temp", "rain", "snow", "clouds", "is_holiday",
                     "hour_sin", "hour_cos", "dow_sin", "dow_cos", "month_sin", "month_cos")
 
-TARGET     <- DF$traffic_volume
-N          <- nrow(DF)
+TARGET     <- df$traffic_volume
+N          <- nrow(df)
 N_FEAT     <- ncol(FEAT)
 TEST_START <- floor((1 - TEST_FRAC) * N) + 1L
 POOL_END   <- TEST_START - 1L
 
 cat(sprintf("rows = %d | %s -> %s | features = %d\n",
-            N, format(min(DF$date_time)), format(max(DF$date_time)), N_FEAT))
+            N, format(min(df$date_time)), format(max(df$date_time)), N_FEAT))
 cat(sprintf("tuning pool = 1..%d | TEST = %d..%d (locked, not used in this script)\n\n",
             POOL_END, TEST_START, N))
 
