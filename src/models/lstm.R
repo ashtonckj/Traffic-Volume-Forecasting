@@ -33,7 +33,7 @@ df$date_time <- as.POSIXct(df$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S
 df <- df[order(df$date_time), ]
 stopifnot(
   "NA values present" = !anyNA(df),
-  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1),
+  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1)
 )
 
 day_num <- match(df$day_of_week, c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
