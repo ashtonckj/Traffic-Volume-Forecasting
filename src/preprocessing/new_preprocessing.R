@@ -3,6 +3,7 @@ library(lubridate)
 library(forecast)
 library(ggplot2)
 library(zoo)
+library(tseries)   # adf.test(), kpss.test()
 
 # =============================================================================
 # 0. PATHS & CONFIG
@@ -34,6 +35,9 @@ SEASONAL_PERIOD <- 168
 
 # Test set length for the fixed train/test split (Section 3)
 TEST_WEEKS <- 8   # 8 weeks = 1,344 hours; enough weekly cycles to evaluate on
+
+# Significance level used for both ADF and KPSS decisions (Section 3b)
+ALPHA <- 0.05
 
 
 # =============================================================================
@@ -334,6 +338,92 @@ if (n_imputed_test > 0) {
 
 
 # =============================================================================
+# 3b. STATIONARITY TESTING (ADF & KPSS) AND DIFFERENCING
+# =============================================================================
+# Run on the TRAINING series only, so the differencing decision (and any
+# model orders derived from it) can't leak information from the test period.
+#
+# ADF (Augmented Dickey-Fuller): H0 = series has a unit root (non-stationary).
+#   p-value < ALPHA  -> reject H0 -> evidence FOR stationarity.
+# KPSS (Kwiatkowski-Phillips-Schmidt-Shin): H0 = series IS (trend-)stationary.
+#   p-value < ALPHA  -> reject H0 -> evidence AGAINST stationarity.
+# The two null hypotheses are reversed on purpose: requiring both tests to
+# agree ("ADF says stationary" AND "KPSS says stationary") is a stricter,
+# more defensible criterion than relying on either test alone.
+
+train_vol <- splits$train$traffic_volume
+
+run_stationarity_tests <- function(x, label) {
+  adf_res  <- tseries::adf.test(x, alternative = "stationary")
+  kpss_res <- tseries::kpss.test(x, null = "Level")
+  cat("\n---", label, "---\n")
+  cat(sprintf("ADF  : stat = %.4f, p-value = %s -> %s\n",
+              unname(adf_res$statistic),
+              format.pval(adf_res$p.value, digits = 4, eps = 0.01),
+              ifelse(adf_res$p.value < ALPHA,
+                     "stationary (reject H0)", "non-stationary (fail to reject H0)")))
+  cat(sprintf("KPSS : stat = %.4f, p-value = %s -> %s\n",
+              unname(kpss_res$statistic),
+              format.pval(kpss_res$p.value, digits = 4, eps = 0.01),
+              ifelse(kpss_res$p.value < ALPHA,
+                     "non-stationary (reject H0)", "stationary (fail to reject H0)")))
+  list(adf = adf_res, kpss = kpss_res)
+}
+
+is_stationary <- function(res) (res$adf$p.value < ALPHA) && (res$kpss$p.value >= ALPHA)
+
+# ---- Level (raw) series ----
+st_level <- run_stationarity_tests(train_vol, "Level (raw traffic_volume, train)")
+
+# ---- Apply non-seasonal differencing until both tests agree (cap at d = 2) ----
+d <- 0
+diff_train <- train_vol
+st_current <- st_level
+while (!is_stationary(st_current) && d < 2) {
+  d <- d + 1
+  diff_train <- diff(train_vol, differences = d)
+  st_current <- run_stationarity_tests(diff_train, paste0("Difference d = ", d))
+}
+
+if (d == 0) {
+  cat("\nSeries is stationary at level -> no non-seasonal differencing applied (d = 0).\n")
+} else if (is_stationary(st_current)) {
+  cat("\nADF and KPSS agree the series is stationary after d =", d, "non-seasonal difference(s).\n")
+} else {
+  cat("\nADF/KPSS still disagree or indicate non-stationarity after d =", d,
+      "(capped) -- inspect eda_01/eda_04 plots for trend/structural breaks before modeling.\n")
+}
+
+# ---- Seasonal unit-root check at the weekly period (168h) ----
+# nsdiffs() (forecast pkg) runs a seasonal unit-root test (default OCSB) to
+# recommend how many seasonal differences (D) the 168h cycle needs.
+train_ts_weekly <- ts(train_vol, frequency = SEASONAL_PERIOD)
+D_seasonal <- forecast::nsdiffs(train_ts_weekly)
+cat("\nRecommended seasonal differences (D) at period =", SEASONAL_PERIOD, ":", D_seasonal, "\n")
+
+cat("\n=== Stationarity Summary (training set) ===\n")
+cat("Non-seasonal differences (d):", d, "\n")
+cat("Seasonal differences (D)    :", D_seasonal, "\n")
+cat("NOTE: auto.arima() searches its own (p,d,q)(P,D,Q) orders and does not\n",
+    "require pre-differenced input -- d and D above are diagnostic evidence\n",
+    "you can pass in as d=, D= (or max.d=, max.D=) to constrain that search,\n",
+    "and are also useful if you fit a manual ARIMA/SARIMA spec by hand.\n", sep = "")
+
+# Keep the differenced training series too, in case you want to inspect/plot
+# it or feed it to a model that expects pre-differenced input.
+stationarity_info <- list(
+  alpha        = ALPHA,
+  d            = d,
+  D            = D_seasonal,
+  adf_level    = st_level$adf,
+  kpss_level   = st_level$kpss,
+  diff_train   = diff_train
+)
+saveRDS(stationarity_info, file.path(output_dir, "stationarity_info.rds"))
+cat("Saved:", file.path(output_dir, "stationarity_info.rds"), "\n")
+
+
+# =============================================================================
 # 4a. TS FORMAT — for SARIMA, Holt-Winters, Seasonal Naive
 # =============================================================================
 
@@ -453,8 +543,9 @@ saveRDS(imputed_flags,  file.path(output_dir, "imputed_flags.rds"))
 saveRDS(list(train = lstm_train_seq, test = lstm_test_seq, scale_params = scale_params),
         file.path(output_dir, "lstm_data.rds"))
 
-cat("Saved: ts_data.rds, xreg_data.rds, imputed_flags.rds, lstm_data.rds\n")
+cat("Saved: ts_data.rds, xreg_data.rds, imputed_flags.rds, lstm_data.rds, stationarity_info.rds\n")
 cat("\n--- Preprocessing complete ---\n")
 cat("SARIMA / Holt-Winters / Seasonal Naive -> use ts_data (frequency =", SEASONAL_PERIOD, ")\n")
 cat("SARIMAX (optional)                     -> use ts_data + xreg_data\n")
 cat("LSTM                                   -> use lstm_data.rds ($train$X, $train$y, etc.)\n")
+cat("Stationarity diagnostics (d, D, test objects) -> stationarity_info.rds\n")
