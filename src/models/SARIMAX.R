@@ -153,21 +153,7 @@ if (n_imputed_in_test > 0) {
 
 
 # ── 6. Stationarity Tests ────────────────────────────────────
-# Run on training series only — no leakage into tuning/test data.
-cat("\n--- Stationarity tests on training series ---\n")
-
-adf_res  <- adf.test(as.numeric(ts_train), alternative = "stationary")
-kpss_res <- kpss.test(as.numeric(ts_train))
-
-cat(sprintf("ADF  p = %.4f  (%s)\n", adf_res$p.value,
-            ifelse(adf_res$p.value  < 0.05, "stationary", "non-stationary")))
-cat(sprintf("KPSS p = %.4f  (%s)\n", kpss_res$p.value,
-            ifelse(kpss_res$p.value > 0.05, "stationary", "non-stationary")))
-
-# D fixed to 0 throughout — see header.
-d_order <- ndiffs(ts_train)
-cat("Suggested d:", d_order, "\n")
-cat("D fixed to 0 (Fourier terms handle seasonal structure).\n")
+# Already done in preprocessing, no differencing required anymore
 
 
 # ── 7. Weekly Fourier Terms (hand-built, period = 168h) ──────
@@ -250,7 +236,7 @@ if (TUNE_K) {
         seasonal      = TRUE,
         stepwise      = TRUE,       # fast: only for ranking K
         approximation = TRUE,       # fast: only for ranking K
-        d  = d_order,
+        d  = 0,
         D  = 0
       )
       fc_k        <- forecast(fit_k, xreg = xr$valid, h = VALID_H)
@@ -322,7 +308,7 @@ fit <- auto.arima(
   seasonal      = TRUE,
   stepwise      = TRUE,       # set FALSE for exhaustive search before submission
   approximation = TRUE,       # set FALSE for exact likelihood before submission
-  d             = d_order,
+  d             = 0,
   D             = 0,
   trace = TRUE
 )

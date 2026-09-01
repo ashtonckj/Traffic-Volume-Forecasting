@@ -434,110 +434,54 @@ is_stationary <- function(res) (res$adf$p.value < ALPHA) && (res$kpss$p.value >=
 # ---- Level (raw) series ----
 st_level <- run_stationarity_tests(train_vol, "Level (raw traffic_volume, train)")
 
-# ---- Apply non-seasonal differencing until both tests agree (cap at d = 2) ----
-# Each iteration also gets its own ACF/PACF pair so you can see the
-# autocorrelation structure change (or fail to change) with each difference.
+# ---- Non-seasonal differencing DISABLED ----
+# By request, this pipeline only applies the seasonal (lag = SEASONAL_PERIOD)
+# difference and never a plain lag-1 (ordinal) difference, even if ADF/KPSS
+# would otherwise recommend one. d is fixed at 0. The level-series test above
+# is kept for diagnostic logging only -- it no longer drives any decision.
 d <- 0
-diff_train <- train_vol
-st_current <- st_level
-while (!is_stationary(st_current) && d < 2) {
-  d <- d + 1
-  diff_train <- diff(train_vol, differences = d)
-  st_current <- run_stationarity_tests(diff_train, paste0("Difference d = ", d))
-  plot_acf_pacf(
-    diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d, " non-seasonal diff"),
-    fname = paste0("eda_06_acf_pacf_after_diff_d", d)
-  )
-}
-
-if (d == 0) {
-  cat("\nSeries is stationary at level -> no non-seasonal differencing applied (d = 0).\n")
-} else if (is_stationary(st_current)) {
-  cat("\nADF and KPSS agree the series is stationary after d =", d, "non-seasonal difference(s).\n")
-} else {
-  cat("\nADF/KPSS still disagree or indicate non-stationarity after d =", d,
-      "(capped) -- inspect eda_01/eda_04 plots for trend/structural breaks before modeling.\n")
-}
+cat("\nNon-seasonal (ordinal) differencing is disabled by design -> d = 0.\n",
+    "Level-series ADF/KPSS above is diagnostic only; only the seasonal (D)\n",
+    "difference below is applied.\n", sep = "")
 
 # ---- Seasonal unit-root check at the weekly period (168h) ----
 # nsdiffs() (forecast pkg) runs a seasonal unit-root test (default OCSB) to
 # recommend how many seasonal differences (D) the 168h cycle needs.
 train_ts_weekly <- ts(train_vol, frequency = SEASONAL_PERIOD)
 D_seasonal <- forecast::nsdiffs(train_ts_weekly)
-cat("\nRecommended seasonal differences (D) at period =", SEASONAL_PERIOD, ":", D_seasonal, "\n")
+if (D_seasonal < 1) D_seasonal <- 1  # force at least one seasonal diff, per request
+cat("\nSeasonal differences (D) at period =", SEASONAL_PERIOD, ":", D_seasonal,
+    "(nsdiffs recommended", forecast::nsdiffs(train_ts_weekly), "; forced to at least 1)\n")
 
-# ---- ACF/PACF after non-seasonal AND seasonal differencing combined ----
-# This is the "after" view that matters most for picking SARIMA orders: it
-# shows what's left once both the trend (d) and the weekly cycle (D) have
-# been removed. If D_seasonal == 0, this is identical to the last d-panel
-# above and is skipped to avoid a duplicate plot.
-final_diff_train <- diff_train
-if (D_seasonal > 0) {
-  final_diff_train <- diff(diff_train, lag = SEASONAL_PERIOD, differences = D_seasonal)
-  plot_acf_pacf(
-    final_diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d, " + D = ", D_seasonal,
-                          " (lag ", SEASONAL_PERIOD, ") diff"),
-    fname = "eda_07_acf_pacf_after_diff_seasonal"
-  )
-} else {
-  cat("D_seasonal = 0 -> no additional seasonal-differencing ACF/PACF panel",
-      "(same as the last non-seasonal-diff panel above).\n")
-}
+# ---- Apply ONLY the seasonal difference (no non-seasonal diff at all) ----
+final_diff_train <- diff(train_vol, lag = SEASONAL_PERIOD, differences = D_seasonal)
+plot_acf_pacf(
+  final_diff_train,
+  title_prefix = paste0("traffic_volume, D = ", D_seasonal, " (lag ", SEASONAL_PERIOD, ") only, no non-seasonal diff"),
+  fname = "eda_07_acf_pacf_seasonal_only"
+)
 
-# ---- Re-test the COMBINED (d + D) series ----
-# The while loop above only ever tested the non-seasonal series in
-# isolation. Layering the seasonal difference on top can change the
-# stationarity verdict, so check the actual final series before trusting it.
-# NOTE ON KPSS AT THIS SAMPLE SIZE: with ~20k+ training observations, KPSS
-# has very high power and will often reject the stationarity null (p < 0.05)
-# even on series that are reasonably well-behaved -- e.g. if a slower annual
-# cycle survives lag-1/lag-168 differencing. Chasing KPSS to p >= ALPHA by
-# adding more non-seasonal differences risks over-differencing (visible as a
-# large negative spike at lag 1 in the ACF), which usually hurts forecast
-# accuracy more than the residual non-stationarity would have. So: try ONE
-# extra non-seasonal difference, capped, and log a warning rather than
-# looping indefinitely if it still doesn't pass -- inspect the ACF/PACF and
-# eda_04 (mstl) plot before adding more.
-st_final <- run_stationarity_tests(final_diff_train, paste0("Combined d = ", d, " + D = ", D_seasonal))
-
-MAX_EXTRA_D <- 1
-extra_d <- 0
-while (!is_stationary(st_final) && extra_d < MAX_EXTRA_D) {
-  extra_d <- extra_d + 1
-  final_diff_train <- diff(final_diff_train, differences = 1)
-  st_final <- run_stationarity_tests(
-    final_diff_train, paste0("Combined d = ", d + extra_d, " + D = ", D_seasonal, " (extra diff)")
-  )
-  plot_acf_pacf(
-    final_diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d + extra_d, " + D = ", D_seasonal, " (extra diff)"),
-    fname = paste0("eda_08_acf_pacf_extra_diff_d", d + extra_d)
-  )
-}
-d_total <- d + extra_d
+st_final <- run_stationarity_tests(final_diff_train, paste0("Seasonal-only D = ", D_seasonal, " (lag ", SEASONAL_PERIOD, "), d = 0"))
 
 if (is_stationary(st_final)) {
-  cat("\nCombined series is stationary at d_total =", d_total, ", D =", D_seasonal, ".\n")
+  cat("\nSeasonal-only difference (D =", D_seasonal, ", d = 0) is stationary by ADF+KPSS.\n")
 } else {
-  cat("\nWARNING: KPSS still rejects stationarity at d_total =", d_total, ", D =", D_seasonal,
+  cat("\nWARNING: KPSS still rejects stationarity at D =", D_seasonal, ", d = 0",
       "(p =", format.pval(st_final$kpss$p.value, digits = 4, eps = 0.01), ").\n",
-      "This is common with a series this long and may reflect residual annual\n",
-      "seasonality or heteroskedasticity rather than a real unit root -- do NOT\n",
-      "keep differencing blindly. Inspect eda_04_mstl.png and the latest\n",
-      "eda_08_acf_pacf_extra_diff_dN.png before adding more non-seasonal\n",
-      "differences. It is often better to let auto.arima() search (p,d,q) and\n",
-      "(P,D,Q) itself -- e.g. auto.arima(train_ts_weekly, seasonal = TRUE,\n",
-      "stepwise = FALSE, approximation = FALSE) -- and treat d_total here as a\n",
-      "diagnostic starting point rather than a hard constraint.\n", sep = "")
+      "Per your requirements, no non-seasonal difference is being added to fix\n",
+      "this. This is common with a series this long (~20k+ observations) and may\n",
+      "reflect residual annual seasonality or heteroskedasticity that a lag-168\n",
+      "difference alone can't remove -- inspect eda_04_mstl.png and\n",
+      "eda_07_acf_pacf_seasonal_only.png. If needed, let auto.arima() add AR/MA\n",
+      "terms to soak up what's left, e.g. auto.arima(train_ts_weekly,\n",
+      "seasonal = TRUE, D = ", D_seasonal, ", d = 0, stepwise = FALSE,\n",
+      "approximation = FALSE).\n", sep = "")
 }
-d <- d_total  # d now reflects the FINAL non-seasonal order used, including any extra diff
 
 cat("\n=== Stationarity Summary (training set) ===\n")
-cat("Non-seasonal differences (d):", d, "\n")
+cat("Non-seasonal differences (d):", d, "(disabled by design)\n")
 cat("Seasonal differences (D)    :", D_seasonal, "\n")
-cat("NOTE: these (d, D) orders are diagnostic evidence from the TRAIN series.\n",
+cat("NOTE: (d, D) orders are diagnostic evidence from the TRAIN series.\n",
     "Section 3c below applies them to the full dataset so the differenced\n",
     "column ships pre-computed in the saved CSV, instead of a model-specific\n",
     "ts object.\n", sep = "")
@@ -546,16 +490,17 @@ cat("NOTE: these (d, D) orders are diagnostic evidence from the TRAIN series.\n"
 # =============================================================================
 # 3c. APPLY DIFFERENCING TO THE FULL DATASET
 # =============================================================================
-# Adds a `traffic_volume_diff` column to the full dataset using the (d, D)
-# orders identified above on the TRAINING split: first d non-seasonal
-# (lag-1) differences, then D seasonal (lag = SEASONAL_PERIOD) differences
-# on top. This is diagnostic/convenience only -- auto.arima() etc. can still
-# search their own orders on the raw traffic_volume column if you prefer;
-# this column just saves you from re-deriving it downstream.
+# Adds a `traffic_volume_diff` column using ONLY the seasonal (lag = 168)
+# difference determined above. Non-seasonal (lag-1) differencing is disabled
+# by design -- d is always 0 here, so the `if (d > 0)` branch below never
+# fires and only the seasonal diff is applied. This is diagnostic/convenience
+# only -- auto.arima() etc. can still search its own orders on the raw
+# traffic_volume column if you prefer; this column just saves you from
+# re-deriving it downstream.
 #
-# Differencing shortens the series, so the first (d + D * SEASONAL_PERIOD)
-# rows can't have a value and are left as NA rather than dropped, keeping
-# the CSV's row count and date_time index identical to the raw column.
+# Differencing shortens the series, so the first (D * SEASONAL_PERIOD) rows
+# can't have a value and are left as NA rather than dropped, keeping the
+# CSV's row count and date_time index identical to the raw column.
 
 diff_vec <- df$traffic_volume
 if (d > 0) {
@@ -567,7 +512,7 @@ if (D_seasonal > 0) {
 n_pad <- nrow(df) - length(diff_vec)
 df$traffic_volume_diff <- c(rep(NA_real_, n_pad), diff_vec)
 
-cat("\nApplied differencing to the full dataset: d =", d, "non-seasonal (lag 1), D =",
+cat("\nApplied differencing to the full dataset: d =", d, "(disabled), D =",
     D_seasonal, "seasonal (lag", SEASONAL_PERIOD, ").\n")
 cat("traffic_volume_diff has", n_pad, "leading NA row(s) (rows lost to differencing).\n\n")
 
@@ -656,15 +601,23 @@ cat("Saved:", file.path(output_dir, "scale_params.csv"), "\n")
 
 # 5c. Stationarity test summary -- the (d, D) orders and ADF/KPSS statistics
 # used to build traffic_volume_diff, as a small CSV instead of an .rds list.
+# Includes BOTH the level (raw, pre-diff) stats AND the post-differencing
+# (seasonal-only, since d = 0) stats side by side, so it's clear at a glance
+# whether differencing actually changed the stationarity verdict.
 stationarity_summary <- data.frame(
   alpha        = ALPHA,
   d            = d,
   D_seasonal   = D_seasonal,
   seasonal_period = SEASONAL_PERIOD,
-  adf_stat_level   = unname(st_level$adf$statistic),
-  adf_pvalue_level = st_level$adf$p.value,
-  kpss_stat_level  = unname(st_level$kpss$statistic),
-  kpss_pvalue_level = st_level$kpss$p.value
+  adf_stat_level    = unname(st_level$adf$statistic),
+  adf_pvalue_level  = st_level$adf$p.value,
+  kpss_stat_level   = unname(st_level$kpss$statistic),
+  kpss_pvalue_level = st_level$kpss$p.value,
+  adf_stat_after_diff    = unname(st_final$adf$statistic),
+  adf_pvalue_after_diff  = st_final$adf$p.value,
+  kpss_stat_after_diff   = unname(st_final$kpss$statistic),
+  kpss_pvalue_after_diff = st_final$kpss$p.value,
+  stationary_after_diff  = is_stationary(st_final)
 )
 write.csv(stationarity_summary, file.path(output_dir, "stationarity_summary.csv"), row.names = FALSE)
 cat("Saved:", file.path(output_dir, "stationarity_summary.csv"), "\n")
@@ -676,6 +629,6 @@ cat("All models -> read traffic_volume_processed.csv and filter on the `split` c
     "             its plain columns.\n", sep = "")
 cat("Invert scaled columns -> use scale_params.csv (min/max per variable).\n")
 cat("Differencing/stationarity details -> stationarity_summary.csv\n")
-cat("ACF/PACF diagnostics -> eda_05 (before diff), eda_06_*_dN (each non-seasonal\n",
-    "diff step), eda_07 (after non-seasonal + seasonal diff), eda_08_*_dN (if an\n",
-    "extra non-seasonal diff was needed after combining with the seasonal diff).\n", sep = "")
+cat("ACF/PACF diagnostics -> eda_05 (before diff), eda_07 (after seasonal-only\n",
+    "diff, D =", D_seasonal, ", lag", SEASONAL_PERIOD, "). Non-seasonal (ordinal)\n",
+    "differencing is disabled -- d is always 0.\n", sep = "")
