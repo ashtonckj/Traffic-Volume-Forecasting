@@ -33,8 +33,12 @@ CUTOFF_DATE <- as.POSIXct("2015-10-01 00:00:00", tz = "UTC")
 # that would require msts() + TBATS, which is out of scope for these 4 models.
 SEASONAL_PERIOD <- 168
 
-# Test set length for the fixed train/test split (Section 3)
-TEST_WEEKS <- 8   # 8 weeks = 1,344 hours; enough weekly cycles to evaluate on
+# Train / validation / test split fractions (Section 3). Applied in
+# chronological order (train earliest, test latest) so no model ever trains
+# on data from after the period it's evaluated on.
+TRAIN_FRAC <- 0.70
+VAL_FRAC   <- 0.15
+TEST_FRAC  <- 0.15   # implied remainder; kept explicit for readability
 
 # Significance level used for both ADF and KPSS decisions (Section 3b)
 ALPHA <- 0.05
@@ -177,8 +181,8 @@ get_seasonal_avg <- function(i, n_weeks = 4) {
 tv[long_idx] <- sapply(long_idx, get_seasonal_avg)
 df$traffic_volume <- round(tv, 0)
 
-# NEW: keep an explicit imputation flag instead of discarding gap_length.
-# This matters most for Seasonal Naive — its forecasts ARE same-hour-lastweek
+# Keep an explicit imputation flag instead of discarding gap_length.
+# This matters most for Seasonal Naive -- its forecasts ARE same-hour-lastweek
 # / seasonal-average values, so if imputed hours end up in the test set you'd
 # be scoring the model against numbers it effectively generated. Carry this
 # flag through and exclude/flag imputed hours when evaluating (Section 3).
@@ -284,8 +288,8 @@ save_ieee("eda_03_monthly_seasonal", p_seasonal)
 # ---- 2d. Multi-seasonal STL decomposition (daily + weekly) ----
 # mstl() (forecast pkg) handles multiple seasonal periods, unlike stl(), so
 # this view is more honest about the data than a single-period decomposition
-# would be — useful for EDA even though SARIMA/HW/Naive below can only act
-# on one of these periods at a time.
+# would be -- useful for EDA even though the models below can only act on
+# one of these periods at a time.
 msts_data <- msts(df$traffic_volume, seasonal.periods = c(24, 168))
 stl_fit <- mstl(msts_data)
 p_stl <- autoplot(stl_fit) + theme_ieee() + labs(title = "Multi-Seasonal STL Decomposition (24h + 168h)")
@@ -302,46 +306,58 @@ df %>%
 
 
 # =============================================================================
-# 3. TRAIN / TEST SPLIT
+# 3. TRAIN / VALIDATION / TEST SPLIT
 # =============================================================================
-# Fixed boundary across ALL four models so MAE/RMSE/MAPE comparisons are valid.
+# Chronological 70/15/15 split, fixed across ALL models so MAE/RMSE/MAPE
+# comparisons are valid. Validation is for model selection / hyperparameter
+# and order tuning (e.g. picking SARIMA (p,d,q), LSTM epochs/architecture);
+# test is only touched once, at the end, for the final comparison.
 
 n_total  <- nrow(df)
-test_n   <- TEST_WEEKS * 168
-train_n  <- n_total - test_n
+train_n  <- floor(TRAIN_FRAC * n_total)
+val_n    <- floor(VAL_FRAC * n_total)
+test_n   <- n_total - train_n - val_n   # remainder, so all rows are used
 
-split_data <- function(dataset, train_n) {
+split_data <- function(dataset, train_n, val_n) {
   list(
-    full  = dataset,
-    train = dataset %>% slice(1:train_n),
-    test  = dataset %>% slice((train_n + 1):n())
+    full       = dataset,
+    train      = dataset %>% slice(1:train_n),
+    validation = dataset %>% slice((train_n + 1):(train_n + val_n)),
+    test       = dataset %>% slice((train_n + val_n + 1):n())
   )
 }
 
-splits <- split_data(df, train_n)
+splits <- split_data(df, train_n, val_n)
 
-cat("\n=== Train/Test Split Verification ===\n")
-cat("Train:", as.character(min(splits$train$date_time)), "to",
-    as.character(max(splits$train$date_time)), "(", nrow(splits$train), "hours )\n")
-cat("Test :", as.character(min(splits$test$date_time)), "to",
-    as.character(max(splits$test$date_time)), "(", nrow(splits$test), "hours )\n")
+cat("\n=== Train/Validation/Test Split Verification ===\n")
+cat("Train     :", as.character(min(splits$train$date_time)), "to",
+    as.character(max(splits$train$date_time)),
+    sprintf("(%d hours, %.1f%%)\n", nrow(splits$train), 100 * nrow(splits$train) / n_total))
+cat("Validation:", as.character(min(splits$validation$date_time)), "to",
+    as.character(max(splits$validation$date_time)),
+    sprintf("(%d hours, %.1f%%)\n", nrow(splits$validation), 100 * nrow(splits$validation) / n_total))
+cat("Test      :", as.character(min(splits$test$date_time)), "to",
+    as.character(max(splits$test$date_time)),
+    sprintf("(%d hours, %.1f%%)\n", nrow(splits$test), 100 * nrow(splits$test) / n_total))
 
-n_imputed_test <- sum(splits$test$is_imputed)
-if (n_imputed_test > 0) {
-  cat("WARNING:", n_imputed_test, "imputed hour(s) fall inside the test set.\n",
-      "Seasonal Naive scores on these hours will be artificially inflated\n",
-      "since the 'ground truth' there was itself seasonal-naive-generated.\n",
-      "Recommend excluding is_imputed==1 rows from reported test metrics.\n")
-} else {
-  cat("No imputed hours fall inside the test set — clean for cross-model comparison.\n")
+for (split_name in c("validation", "test")) {
+  n_imputed <- sum(splits[[split_name]]$is_imputed)
+  if (n_imputed > 0) {
+    cat("WARNING:", n_imputed, "imputed hour(s) fall inside the", split_name, "set.\n",
+        "Seasonal Naive scores on these hours will be artificially inflated\n",
+        "since the 'ground truth' there was itself seasonal-naive-generated.\n",
+        "Recommend excluding is_imputed==1 rows from reported", split_name, "metrics.\n")
+  } else {
+    cat("No imputed hours fall inside the", split_name, "set -- clean for cross-model comparison.\n")
+  }
 }
 
 
 # =============================================================================
-# 3b. STATIONARITY TESTING (ADF & KPSS) AND DIFFERENCING
+# 3b. STATIONARITY TESTING (ADF & KPSS) AND DIFFERENCING ORDER SELECTION
 # =============================================================================
-# Run on the TRAINING series only, so the differencing decision (and any
-# model orders derived from it) can't leak information from the test period.
+# Run on the TRAINING series only, so the differencing decision can't leak
+# information from the test period.
 #
 # ADF (Augmented Dickey-Fuller): H0 = series has a unit root (non-stationary).
 #   p-value < ALPHA  -> reject H0 -> evidence FOR stationarity.
@@ -404,58 +420,64 @@ cat("\nRecommended seasonal differences (D) at period =", SEASONAL_PERIOD, ":", 
 cat("\n=== Stationarity Summary (training set) ===\n")
 cat("Non-seasonal differences (d):", d, "\n")
 cat("Seasonal differences (D)    :", D_seasonal, "\n")
-cat("NOTE: auto.arima() searches its own (p,d,q)(P,D,Q) orders and does not\n",
-    "require pre-differenced input -- d and D above are diagnostic evidence\n",
-    "you can pass in as d=, D= (or max.d=, max.D=) to constrain that search,\n",
-    "and are also useful if you fit a manual ARIMA/SARIMA spec by hand.\n", sep = "")
-
-# Keep the differenced training series too, in case you want to inspect/plot
-# it or feed it to a model that expects pre-differenced input.
-stationarity_info <- list(
-  alpha        = ALPHA,
-  d            = d,
-  D            = D_seasonal,
-  adf_level    = st_level$adf,
-  kpss_level   = st_level$kpss,
-  diff_train   = diff_train
-)
-saveRDS(stationarity_info, file.path(output_dir, "stationarity_info.rds"))
-cat("Saved:", file.path(output_dir, "stationarity_info.rds"), "\n")
+cat("NOTE: these (d, D) orders are diagnostic evidence from the TRAIN series.\n",
+    "Section 3c below applies them to the full dataset so the differenced\n",
+    "column ships pre-computed in the saved CSV, instead of a model-specific\n",
+    "ts object.\n", sep = "")
 
 
 # =============================================================================
-# 4a. TS FORMAT — for SARIMA, Holt-Winters, Seasonal Naive
+# 3c. APPLY DIFFERENCING TO THE FULL DATASET
 # =============================================================================
+# Adds a `traffic_volume_diff` column to the full dataset using the (d, D)
+# orders identified above on the TRAINING split: first d non-seasonal
+# (lag-1) differences, then D seasonal (lag = SEASONAL_PERIOD) differences
+# on top. This is diagnostic/convenience only -- auto.arima() etc. can still
+# search their own orders on the raw traffic_volume column if you prefer;
+# this column just saves you from re-deriving it downstream.
+#
+# Differencing shortens the series, so the first (d + D * SEASONAL_PERIOD)
+# rows can't have a value and are left as NA rather than dropped, keeping
+# the CSV's row count and date_time index identical to the raw column.
 
-make_ts <- function(d, freq = SEASONAL_PERIOD) ts(d$traffic_volume, frequency = freq)
+diff_vec <- df$traffic_volume
+if (d > 0) {
+  diff_vec <- diff(diff_vec, differences = d)
+}
+if (D_seasonal > 0) {
+  diff_vec <- diff(diff_vec, lag = SEASONAL_PERIOD, differences = D_seasonal)
+}
+n_pad <- nrow(df) - length(diff_vec)
+df$traffic_volume_diff <- c(rep(NA_real_, n_pad), diff_vec)
 
-ts_data <- list(
-  full  = make_ts(splits$full),
-  train = make_ts(splits$train),
-  test  = make_ts(splits$test)
-)
+cat("\nApplied differencing to the full dataset: d =", d, "non-seasonal (lag 1), D =",
+    D_seasonal, "seasonal (lag", SEASONAL_PERIOD, ").\n")
+cat("traffic_volume_diff has", n_pad, "leading NA row(s) (rows lost to differencing).\n\n")
 
-# is_holiday as an ts-aligned exogenous vector, for SARIMAX use if desired
-xreg_data <- list(
-  full  = matrix(splits$full$is_holiday,  ncol = 1, dimnames = list(NULL, "is_holiday")),
-  train = matrix(splits$train$is_holiday, ncol = 1, dimnames = list(NULL, "is_holiday")),
-  test  = matrix(splits$test$is_holiday,  ncol = 1, dimnames = list(NULL, "is_holiday"))
-)
-
-# Same-hour imputation flags, aligned to ts_data, for filtering metrics later
-imputed_flags <- list(
-  train = splits$train$is_imputed,
-  test  = splits$test$is_imputed
-)
+# Re-slice train/validation/test now that the diff column exists, so
+# downstream splits carry it too.
+splits <- split_data(df, train_n, val_n)
 
 
 # =============================================================================
-# 4b. LSTM FORMAT — scaled features + cyclical encoding + windowed sequences
+# 4. MODEL-READY FEATURES (flat table, no per-model ts()/array objects)
 # =============================================================================
-# LSTMs need: (1) scaled inputs, fit on TRAIN only to avoid leakage, and
-# (2) cyclical encoding for hour/day/month so e.g. hour 23 -> hour 0 doesn't
-# look like a big numeric jump.
+# Everything below is added as plain columns on `df` and written out as CSV.
+# Any downstream tool -- R ts(), a SARIMAX xreg matrix, a Keras windowed
+# LSTM input, etc. -- can be re-derived directly from these columns, so we
+# no longer build or save separate ts_data / xreg_data / lstm array objects.
 
+# ---- 4a. Split label ----
+# Same chronological boundaries as Section 3, carried as a plain column
+# instead of a list of separate ts()/data-frame objects.
+df$split <- NA_character_
+df$split[1:train_n]                          <- "train"
+df$split[(train_n + 1):(train_n + val_n)]    <- "validation"
+df$split[(train_n + val_n + 1):n_total]      <- "test"
+
+# ---- 4b. Cyclical encoding ----
+# sin/cos encodings so e.g. hour 23 -> hour 0 doesn't look like a big jump
+# to models that treat these as ordinary numeric features (e.g. an LSTM).
 add_cyclical <- function(d) {
   d %>%
     mutate(
@@ -466,86 +488,74 @@ add_cyclical <- function(d) {
       dow_cos   = cos(2 * pi * dow_num / 7),
       month_sin = sin(2 * pi * month / 12),
       month_cos = cos(2 * pi * month / 12)
-    )
+    ) %>%
+    select(-dow_num)
 }
+df <- add_cyclical(df)
 
-lstm_train_df <- add_cyclical(splits$train)
-lstm_test_df  <- add_cyclical(splits$test)
-
-# Min-max scale numeric predictors + target using TRAIN stats only
+# ---- 4c. Min-max scaling (fit on TRAIN rows only, to avoid leakage) ----
 scale_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all", "traffic_volume")
+train_rows <- df$split == "train"
 scale_params <- lapply(scale_cols, function(col) {
-  list(min = min(lstm_train_df[[col]]), max = max(lstm_train_df[[col]]))
+  list(min = min(df[[col]][train_rows], na.rm = TRUE),
+       max = max(df[[col]][train_rows], na.rm = TRUE))
 })
 names(scale_params) <- scale_cols
 
-apply_scaling <- function(d, params) {
-  for (col in names(params)) {
-    rng <- params[[col]]$max - params[[col]]$min
-    d[[paste0(col, "_scaled")]] <- if (rng == 0) 0 else (d[[col]] - params[[col]]$min) / rng
-  }
-  d
+for (col in names(scale_params)) {
+  rng <- scale_params[[col]]$max - scale_params[[col]]$min
+  df[[paste0(col, "_scaled")]] <- if (rng == 0) 0 else (df[[col]] - scale_params[[col]]$min) / rng
 }
 
-lstm_train_df <- apply_scaling(lstm_train_df, scale_params)
-lstm_test_df  <- apply_scaling(lstm_test_df, scale_params)
-
-feature_cols <- c("temp_scaled", "rain_1h_scaled", "snow_1h_scaled", "clouds_all_scaled",
-                  "is_holiday", "hour_sin", "hour_cos", "dow_sin", "dow_cos",
-                  "month_sin", "month_cos")
-target_col <- "traffic_volume_scaled"
-
-# Windowing: n_lag hours of history -> predict the next n_ahead hour(s).
-# 168 (one full week of history) is a natural default given the weekly
-# seasonality baked into this series; adjust to taste.
-create_sequences <- function(d, feature_cols, target_col, n_lag = 168, n_ahead = 1) {
-  n <- nrow(d)
-  n_seq <- n - n_lag - n_ahead + 1
-  if (n_seq <= 0) stop("Not enough rows to build sequences with this n_lag/n_ahead.")
-  X <- array(NA_real_, dim = c(n_seq, n_lag, length(feature_cols)))
-  y <- array(NA_real_, dim = c(n_seq, n_ahead))
-  feat_mat <- as.matrix(d[, feature_cols])
-  targ_vec <- d[[target_col]]
-  for (i in seq_len(n_seq)) {
-    X[i, , ] <- feat_mat[i:(i + n_lag - 1), ]
-    y[i, ]   <- targ_vec[(i + n_lag):(i + n_lag + n_ahead - 1)]
-  }
-  list(X = X, y = y)
-}
-
-lstm_train_seq <- create_sequences(lstm_train_df, feature_cols, target_col)
-lstm_test_seq  <- create_sequences(lstm_test_df,  feature_cols, target_col)
-
-cat("\n=== LSTM Sequence Shapes ===\n")
-cat("Train X:", paste(dim(lstm_train_seq$X), collapse = " x "),
-    "| Train y:", paste(dim(lstm_train_seq$y), collapse = " x "), "\n")
-cat("Test  X:", paste(dim(lstm_test_seq$X), collapse = " x "),
-    "| Test  y:", paste(dim(lstm_test_seq$y), collapse = " x "), "\n")
-cat("(To invert predictions back to raw units, reverse the min-max transform\n",
-    " using scale_params$traffic_volume$min / $max.)\n", sep = "")
+cat("=== Model-ready feature table ===\n")
+cat("Columns:", paste(names(df), collapse = ", "), "\n")
+cat("Rows   :", nrow(df), "\n\n")
 
 
 # =============================================================================
-# 5. SAVE
+# 5. SAVE (CSV only)
 # =============================================================================
 
-# 5a. Full cleaned hourly dataset (human-readable CSV)
+# 5a. Full model-ready dataset -- one flat CSV with raw + differenced +
+# cyclical + scaled columns and a split label. Filter on `split` downstream
+# for train/validation/test, and reconstruct whatever structure a given
+# model needs (ts(), xreg matrix, windowed sequences) directly from this.
 df_out <- df
 df_out$date_time <- format(df_out$date_time, "%Y-%m-%d %H:%M:%S")  # avoid
 # write.csv() silently dropping "00:00:00" on midnight rows otherwise
 write.csv(df_out, file.path(output_dir, "traffic_volume_processed.csv"), row.names = FALSE)
-cat("\nSaved:", file.path(output_dir, "traffic_volume_processed.csv"), "\n")
+cat("Saved:", file.path(output_dir, "traffic_volume_processed.csv"), "\n")
 
-# 5b. Model-ready objects
-saveRDS(ts_data,        file.path(output_dir, "ts_data.rds"))
-saveRDS(xreg_data,      file.path(output_dir, "xreg_data.rds"))
-saveRDS(imputed_flags,  file.path(output_dir, "imputed_flags.rds"))
-saveRDS(list(train = lstm_train_seq, test = lstm_test_seq, scale_params = scale_params),
-        file.path(output_dir, "lstm_data.rds"))
+# 5b. Scaling parameters -- needed to invert the *_scaled columns back to
+# raw units later (e.g. after an LSTM prediction).
+scale_params_df <- data.frame(
+  variable = names(scale_params),
+  min      = sapply(scale_params, function(p) p$min),
+  max      = sapply(scale_params, function(p) p$max),
+  row.names = NULL
+)
+write.csv(scale_params_df, file.path(output_dir, "scale_params.csv"), row.names = FALSE)
+cat("Saved:", file.path(output_dir, "scale_params.csv"), "\n")
 
-cat("Saved: ts_data.rds, xreg_data.rds, imputed_flags.rds, lstm_data.rds, stationarity_info.rds\n")
+# 5c. Stationarity test summary -- the (d, D) orders and ADF/KPSS statistics
+# used to build traffic_volume_diff, as a small CSV instead of an .rds list.
+stationarity_summary <- data.frame(
+  alpha        = ALPHA,
+  d            = d,
+  D_seasonal   = D_seasonal,
+  seasonal_period = SEASONAL_PERIOD,
+  adf_stat_level   = unname(st_level$adf$statistic),
+  adf_pvalue_level = st_level$adf$p.value,
+  kpss_stat_level  = unname(st_level$kpss$statistic),
+  kpss_pvalue_level = st_level$kpss$p.value
+)
+write.csv(stationarity_summary, file.path(output_dir, "stationarity_summary.csv"), row.names = FALSE)
+cat("Saved:", file.path(output_dir, "stationarity_summary.csv"), "\n")
+
 cat("\n--- Preprocessing complete ---\n")
-cat("SARIMA / Holt-Winters / Seasonal Naive -> use ts_data (frequency =", SEASONAL_PERIOD, ")\n")
-cat("SARIMAX (optional)                     -> use ts_data + xreg_data\n")
-cat("LSTM                                   -> use lstm_data.rds ($train$X, $train$y, etc.)\n")
-cat("Stationarity diagnostics (d, D, test objects) -> stationarity_info.rds\n")
+cat("All models -> read traffic_volume_processed.csv and filter on the `split` column\n",
+    "             (train / validation / test), then build whatever structure\n",
+    "             (ts(), xreg matrix, windowed LSTM sequences) you need from\n",
+    "             its plain columns.\n", sep = "")
+cat("Invert scaled columns -> use scale_params.csv (min/max per variable).\n")
+cat("Differencing/stationarity details -> stationarity_summary.csv\n")
