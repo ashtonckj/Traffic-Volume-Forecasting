@@ -1,15 +1,6 @@
-# lstm.R's final block passes the TEST set as `validation_data` and early-stops
-# on it with restore_best_weights = TRUE. That lets the test set choose the
-# stopping epoch, which biases the reported test score optimistically.
-#
-# This script does it correctly: it trains on the full tuning pool for a FIXED
-# number of epochs (taken from the cross-validation best_epochs) with NO early
-# stopping and NO validation_data, then touches the test set exactly once, to
-# predict. The test set influences nothing about the model.
-
 suppressPackageStartupMessages(library(keras3))
 
-# 1. THE WINNING CONFIGURATION  (from results/tuning_results.csv)
+# 1. THE WINNING CONFIGURATION  (from output/models/lstm/tuning_results.csv)
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 
 cfg <- list(
@@ -181,13 +172,13 @@ cat("==============================================================\n")
 res <- data.frame(model = rownames(out), out, row.names = NULL)
 for (k in names(cfg)) res[[k]] <- cfg[[k]]
 res$epochs <- EPOCHS
-write.csv(res, "results/final_test_metrics.csv", row.names = FALSE)
+write.csv(res, "output/models/lstm/final_test_metrics.csv", row.names = FALSE)
 
 write.csv(data.frame(date_time = df$date_time[te$idx],
                      actual = te$y,
                      predicted = round(pred, 2),
                      naive = naive),
-          "results/final_test_predictions.csv", row.names = FALSE)
+          "output/models/lstm/final_test_predictions.csv", row.names = FALSE)
 
-cat("\nSaved:\n  results/final_test_metrics.csv\n",
-    "  results/final_test_predictions.csv\n", sep = "")
+cat("\nSaved:\n  output/models/lstm/final_test_metrics.csv\n",
+    "  output/models/lstm/final_test_predictions.csv\n", sep = "")

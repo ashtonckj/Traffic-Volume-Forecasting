@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
 })
 
 PROCESSED_PATH <- "data/processed/traffic_volume_processed.csv"
-RESULTS_DIR    <- "results"
+RESULTS_DIR    <- "output/models/lstm"
 
 # ---- Split boundaries ----
 # Chronological, matching the rest of the group's models so every method is

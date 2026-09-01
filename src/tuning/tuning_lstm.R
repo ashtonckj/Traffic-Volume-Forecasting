@@ -6,7 +6,7 @@
 #   Protocol : 85% tuning pool / 15% locked test (test is NEVER touched here)
 #   CV       : expanding-window (anchored) rolling origin, 4 folds, purged gap
 #   Ranking  : mean MASE across all 4 folds
-#   Output   : results/tuning_results.csv   (appended after EVERY config)
+#   Output   : output/models/lstm/tuning_results.csv   (appended after EVERY config)
 #
 #   Restartable: a config already in the CSV is skipped. Ctrl-C is safe.
 # =============================================================================
@@ -17,7 +17,7 @@ suppressPackageStartupMessages(library(keras3))
 # 1. SETTINGS
 # =============================================================================
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
-OUT_PATH <- "results/tuning_results.csv"
+OUT_PATH <- "output/models/lstm/tuning_results.csv"
 
 TEST_FRAC <- 0.15     # protocol — never tuned
 N_FOLDS <- 4L         # protocol — never tuned

@@ -1,7 +1,7 @@
 # ============================================================
 # Three-Month Forward Forecast (2018-10-01 .. 2018-12-31)
 # Input:  data/processed/traffic_volume_processed.csv
-#         results/lstm_tuning_results.csv (produced by tuning_lstm.R)
+#         output/models/lstm/lstm_tuning_results.csv (produced by tuning_lstm.R)
 #
 # lstm.R measures how accurate the model is on data it has never seen but
 # which was actually observed. This script does the thing the model is
@@ -52,7 +52,7 @@ if (file.exists(tuning_results_path)) {
   tuning_results <- read.csv(tuning_results_path) %>% arrange(val_loss_mse)
   best_cfg <- tuning_results[1, ]
 } else {
-  stop("results/lstm_tuning_results.csv not found -- run tuning_lstm.R first.")
+  stop("output/models/lstm/lstm_tuning_results.csv not found -- run tuning_lstm.R first.")
 }
 print(best_cfg)
 
