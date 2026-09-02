@@ -3,7 +3,7 @@
     "order": {
       "p": 5,
       "d": 0,
-      "q": 1
+      "q": 3
     },
     "seasonal_order": {
       "P": "NA",
@@ -17,11 +17,11 @@
       "lag": 168,
       "note": "Pre-differenced before auto.arima; d=D=0 inside fit"
     },
-    "xreg_cols": "is_holiday",
-    "AIC": 268501.7558,
-    "AICc": 268501.7656,
-    "BIC": 268572.0601,
-    "log_likelihood": -134241.8779
+    "xreg_cols": ["is_holiday", "temp_s", "rain_s", "snow_s", "cloud_s"],
+    "AIC": 268515.3211,
+    "AICc": 268515.3441,
+    "BIC": 268624.6834,
+    "log_likelihood": -134243.6605
   },
   "stationarity": {
     "note": "Tested in differencing.R — see stationarity_summary.csv",
@@ -34,19 +34,19 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 19.6515,
-    "RMSE": 562.5753,
-    "MAE": 273.6415,
-    "MAPE": 10.9801,
-    "sMAPE": 10.7377,
-    "MASE": 0.4721
+    "ME": 508.0714,
+    "RMSE": 1103.4864,
+    "MAE": 730.0821,
+    "MAPE": 27.3774,
+    "sMAPE": 34.6113,
+    "MASE": 1.2595
   },
   "accuracy_observed_only": {
-    "n_imputed_in_test": 6,
-    "RMSE": 562.9624,
-    "MAE": 273.926,
-    "MAPE": 10.9663,
-    "sMAPE": 10.7
+    "n_imputed_in_test": 0,
+    "RMSE": null,
+    "MAE": null,
+    "MAPE": null,
+    "sMAPE": null
   },
   "split": {
     "total_n": 26304,
