@@ -306,7 +306,7 @@ for (i in seq_len(nrow(TODO))) {
   }
   be <- vapply(res, function(r) r$best_epoch, integer(1))
   row$best_epochs <- paste(be, collapse = ";")
-  row$secs        <- round(secs, 1)
+  row$secs <- round(secs, 1)
 
   append_row(row, OUT_PATH)   # written immediately — a crash never loses finished work
 
