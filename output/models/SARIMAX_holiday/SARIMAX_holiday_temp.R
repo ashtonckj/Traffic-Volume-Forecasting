@@ -28,7 +28,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 # ── 1. Paths ─────────────────────────────────────────────────
 input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output/models/SARIMA_pure"
+output_dir <- "output/models/SARIMAX_holiday_temp"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 
@@ -261,10 +261,40 @@ cat("Saved -> ", file.path(output_dir, "stationarity_summary.csv"), "\n")
 # fine for an exploratory upper-bound test, but is NOT a deployable model
 # unless these are replaced with forecasted weather at inference time.
 
-# ── 7. xreg: NONE (Pure SARIMA) ──────────────────────────────
-xreg_train_full <- NULL
-xreg_valid_full <- NULL
-xreg_test_full  <- NULL
+# ── 7. xreg: is_holiday + temperature ─────────────────────────
+build_xreg <- function(idx, ref_idx = train_idx) {
+  d <- df[idx, ]
+  
+  # Scale temperature using train-only mean and sd
+  temp_mean <- mean(df$temp[ref_idx])
+  temp_sd   <- sd(df$temp[ref_idx])
+  
+  d$temp_s  <- (d$temp - temp_mean) / temp_sd
+  
+  # Create design matrix dropping the intercept term
+  mm <- model.matrix(~ is_holiday + temp_s, data = d)[, -1]
+  mm
+}
+
+xreg_train_full <- build_xreg(train_idx[(n_pad + 1):TRAIN_N])
+xreg_valid_full <- build_xreg(valid_idx)
+xreg_test_full  <- build_xreg(test_idx)
+
+cat("Dual-feature xreg dim (train):", dim(xreg_train_full), "\n")
+
+# ── 7b. Collinearity check BEFORE fitting ────────────────────
+# Rank check: if rank < ncol, some columns are exact linear combinations
+# of others and auto.arima/Arima will either drop them silently or error.
+qr_rank <- qr(xreg_train_full)$rank
+cat(sprintf("Design matrix: %d columns, rank = %d %s\n",
+            ncol(xreg_train_full), qr_rank,
+            ifelse(qr_rank < ncol(xreg_train_full), "-- RANK DEFICIENT", "-- full rank")))
+
+# Pairwise correlation among continuous weather vars only (quick sanity check)
+weather_cor <- cor(df[train_idx, c("temp","rain_1h","snow_1h","clouds_all")],
+                   use = "complete.obs")
+cat("\nWeather variable correlations (train):\n")
+print(round(weather_cor, 2))
 
 
 # ── 8. Final Model Fitting ────────────────────────────────────
@@ -289,13 +319,13 @@ cat("(stepwise=TRUE, approximation=TRUE — set both FALSE for exhaustive final 
 
 fit <- auto.arima(
   ts_fit_final,
-  xreg          = NULL,
-  seasonal      = FALSE,   # Weekly seasonality removed by D=1 pre-differencing
-  d             = 0,
-  D             = 0,
-  stepwise      = TRUE,
+  xreg     = xreg_fit_final,
+  seasonal   = FALSE, # weekly seasonality already removed by D=1 diff
+  d      = 0,   # pre-differenced; no further differencing
+  D      = 0,
+  stepwise   = TRUE,
   approximation = TRUE,
-  trace         = TRUE
+  trace    = TRUE
 )
 cat("\n--- Fitted model ---\n")
 print(summary(fit))
@@ -342,7 +372,7 @@ cat("Saved -> output/models/SARIMA/sarima_residual_diagnostics.png\n")
 
 
 # ── 10. Forecast (test window) ───────────────────────────────
-fc <- forecast(fit, h = TEST_H)
+fc <- forecast(fit, xreg = xreg_test_full, h = TEST_H)
 recon <- c(tail(valid_raw, SEASON), rep(NA_real_, TEST_H))
 for (i in seq_len(TEST_H)) {
   # recon[i] is the anchor at lag SEASON for this step:
@@ -435,7 +465,7 @@ p_fc <- ggplot(fc_df, aes(x = date_time)) +
   geom_line(aes(y = forecast), colour = "#e34a33", linewidth = 0.6,
             linetype = "dashed") +
   labs(
-    title  = sprintf("SARIMA %d-Day Test Forecast vs Actual (D=1, d=0)",
+    title  = sprintf("SARIMAX (is_holiday, temp) — %d-Day Test Forecast vs Actual (D=1, d=0)",
                      TEST_H %/% 24),
     subtitle = sprintf("RMSE = %.1f | MAE = %.1f | MAPE = %.2f%% | sMAPE = %.2f%%",
                        rmse, mae, mape, smape),
@@ -458,7 +488,7 @@ p_zoom <- ggplot(fc_df[1:min(24 * 7, nrow(fc_df)), ], aes(x = date_time)) +
   geom_line(aes(y = actual), colour = "#333333", linewidth = 0.7) +
   geom_line(aes(y = forecast), colour = "#e34a33", linewidth = 0.7,
             linetype = "dashed") +
-  labs(title = "SARIMA — First 7 Days of Test Window (Zoom)",
+  labs(title = "SARIMAX (is_holiday, temp) — First 7 Days of Test Window (Zoom)",
        x = "Date", y = "Traffic Volume (vehicles / hr)") +
   theme_minimal(base_size = 11)
 
@@ -503,9 +533,9 @@ summary_list <- list(
     D_order = D_ORDER
   ),
   residual_tests = list(
-    Ljung_Box_lag48_p  = ifelse(lb_48$p.value < 0.0001, "< 0.0001", as.character(round(lb_48$p.value, 4))),
-    Ljung_Box_lag168_p = ifelse(lb_168$p.value < 0.0001, "< 0.0001", as.character(round(lb_168$p.value, 4))),
-    Shapiro_Wilk_p     = ifelse(sw$p.value < 0.0001, "< 0.0001", as.character(round(sw$p.value, 4)))
+    Ljung_Box_lag48_p = round(lb_48$p.value, 4),
+    Ljung_Box_lag168_p = round(lb_168$p.value, 4),
+    Shapiro_Wilk_p  = round(sw$p.value,  4)
   ),
   accuracy = list(
     ME  = round(me,  4),

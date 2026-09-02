@@ -28,7 +28,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 # ── 1. Paths ─────────────────────────────────────────────────
 input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output/models/ARIMA"
+output_dir <- "output/models/SARIMAX Full"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 
@@ -442,7 +442,10 @@ if (n_imputed_in_test > 0) {
   cat(sprintf("MAPE : %10.4f %%\n", mape_obs))
   cat(sprintf("sMAPE : %10.4f %%\n", smape_obs))
 } else {
-  rmse_obs <- mae_obs <- mape_obs <- smape_obs <- NA_real_
+  rmse_obs  <- rmse
+  mae_obs   <- mae
+  mape_obs  <- mape
+  smape_obs <- smape
 }
 
 

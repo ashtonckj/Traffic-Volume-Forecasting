@@ -1,9 +1,9 @@
 {
   "model": {
     "order": {
-      "p": 5,
+      "p": 1,
       "d": 0,
-      "q": 3
+      "q": 2
     },
     "seasonal_order": {
       "P": "NA",
@@ -17,11 +17,11 @@
       "lag": 168,
       "note": "Pre-differenced before auto.arima; d=D=0 inside fit"
     },
-    "xreg_cols": "is_holiday",
-    "AIC": 268513.257,
-    "AICc": 268513.269,
-    "BIC": 268591.3729,
-    "log_likelihood": -134246.6285
+    "xreg_cols": {},
+    "AIC": 268742.1848,
+    "AICc": 268742.187,
+    "BIC": 268773.4312,
+    "log_likelihood": -134367.0924
   },
   "stationarity": {
     "note": "Tested in differencing.R — see stationarity_summary.csv",
@@ -29,24 +29,24 @@
     "D_order": 1
   },
   "residual_tests": {
-    "Ljung_Box_lag48_p": 0,
-    "Ljung_Box_lag168_p": 0,
-    "Shapiro_Wilk_p": 0
+    "Ljung_Box_lag48_p": "< 0.0001",
+    "Ljung_Box_lag168_p": "< 0.0001",
+    "Shapiro_Wilk_p": "< 0.0001"
   },
   "accuracy": {
-    "ME": 28.4374,
-    "RMSE": 562.907,
-    "MAE": 273.5112,
-    "MAPE": 10.9329,
-    "sMAPE": 10.7686,
-    "MASE": 0.4718
+    "ME": 448.4472,
+    "RMSE": 1097.4117,
+    "MAE": 703.7562,
+    "MAPE": 25.4682,
+    "sMAPE": 31.4594,
+    "MASE": 1.2141
   },
   "accuracy_observed_only": {
-    "n_imputed_in_test": 6,
-    "RMSE": 563.2925,
-    "MAE": 273.7998,
-    "MAPE": 10.9186,
-    "sMAPE": 10.7311
+    "n_imputed_in_test": 0,
+    "RMSE": 1097.4117,
+    "MAE": 703.7562,
+    "MAPE": 25.4682,
+    "sMAPE": 31.4594
   },
   "split": {
     "total_n": 26304,

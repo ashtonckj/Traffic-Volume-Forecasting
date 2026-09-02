@@ -43,10 +43,10 @@
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 0,
-    "RMSE": null,
-    "MAE": null,
-    "MAPE": null,
-    "sMAPE": null
+    "RMSE": 1103.4864,
+    "MAE": 730.0821,
+    "MAPE": 27.3774,
+    "sMAPE": 34.6113
   },
   "split": {
     "total_n": 26304,
