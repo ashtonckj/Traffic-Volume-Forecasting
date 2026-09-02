@@ -40,32 +40,29 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-DAY_LEVELS <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-day_num <- match(df$day_of_week, DAY_LEVELS)          # Monday = 1 ... Sunday = 7
-stopifnot("unrecognised day_of_week" = !anyNA(day_num))
-
-# Nine features, taken directly from the dataset columns.
+# Six features, taken directly from the dataset columns.
 FEATURE <- cbind(
   traffic    = df$traffic_volume,
   temp       = df$temp,
   rain       = df$rain_1h,
   snow       = df$snow_1h,
   clouds     = df$clouds_all,
-  is_holiday = df$is_holiday,
-  hour       = df$hour,
-  month      = df$month,
-  day_num    = day_num
+  is_holiday = df$is_holiday
 )
 
 TARGET <- df$traffic_volume
 N_ROWS <- nrow(df)
 N_FEATURE <- ncol(FEATURE)
-TEST_START <- floor((1 - TEST_FRAC) * N_ROWS) + 1L
+# Take the test boundary from the shared split column so the LSTM is scored on
+# exactly the rows the other models use.
+TEST_START <- if ("split" %in% names(df)) min(which(df$split == "test")) else floor((1 - TEST_FRAC) * N_ROWS) + 1L
 POOL_END <- TEST_START - 1L
 
-cat(sprintf("rows = %d | TRAIN pool = 1..%d (%s .. %s)\n", N_ROWS, POOL_END,
+cat(sprintf("rows = %d | features = %d (%s)\n", N_ROWS, N_FEATURE,
+            paste(colnames(FEATURE), collapse = ", ")))
+cat(sprintf("TRAIN pool = 1..%d      (%s .. %s)\n", POOL_END,
             format(df$date_time[1], "%Y-%m-%d"), format(df$date_time[POOL_END], "%Y-%m-%d")))
-cat(sprintf("           TEST      = %d..%d (%s .. %s, %.1f%%)\n\n", TEST_START, N_ROWS,
+cat(sprintf("TEST       = %d..%d (%s .. %s, %.1f%%)\n\n", TEST_START, N_ROWS,
             format(df$date_time[TEST_START], "%Y-%m-%d"),
             format(df$date_time[N_ROWS], "%Y-%m-%d"), 100 * (N_ROWS - TEST_START + 1) / N_ROWS))
 
@@ -82,6 +79,7 @@ make_windows <- function(rows) {
        idx = rows[(cfg$lookback + cfg$horizon):length(rows)])
 }
 
+# Standardisation fitted on TRAINING rows only.
 make_scaler <- function(train_rows) {
   mu <- colMeans(FEATURE[train_rows, , drop = FALSE])
   sd <- apply(FEATURE[train_rows, , drop = FALSE], 2, stats::sd)
@@ -90,6 +88,7 @@ make_scaler <- function(train_rows) {
   mu_y <- mean(yt)
   sd_y <- stats::sd(yt)
   list(
+    mu = mu, sd = sd,
     x_apply = function(a) {
       for (j in seq_len(N_FEATURE)) a[, , j] <- (a[, , j] - mu[j]) / sd[j]
       a
@@ -182,8 +181,8 @@ write.csv(transform(test_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S"))
 # The horizon lies beyond the end of the record, so no actual values exist and
 # no accuracy can be measured for it. Two inputs must be supplied:
 #
-#   Calendar (hour, month, day_num, is_holiday) — known exactly in advance.
-#   Weather  (temp, rain, snow, clouds)         — unknown, so set to climatology:
+#   is_holiday                          — known exactly in advance.
+#   Weather (temp, rain, snow, clouds)  — unknown, so set to climatology:
 #     the historical mean for that month and hour across the observed record.
 #     This makes the output a forecast under average seasonal weather, which is
 #     an assumption, not a weather prediction.
@@ -213,7 +212,8 @@ future_is_holiday <- as.integer(as.Date(future_dates) %in% future_holidays)
 cat(sprintf("Holiday hours in horizon: %d\n", sum(future_is_holiday)))
 
 # Climatology by month x hour, in the same units FEATURE stores.
-clim <- data.frame(key = paste(df$month, df$hour),
+obs_lt <- as.POSIXlt(df$date_time)
+clim <- data.frame(key = paste(obs_lt$mon + 1L, obs_lt$hour),
                    temp = df$temp, rain = df$rain_1h,
                    snow = df$snow_1h, clouds = df$clouds_all)
 clim_mean <- aggregate(cbind(temp, rain, snow, clouds) ~ key, data = clim, FUN = mean)
@@ -226,10 +226,7 @@ FUTURE_FEATURE <- cbind(
   rain       = clim_mean$rain[mi],
   snow       = clim_mean$snow[mi],
   clouds     = clim_mean$clouds[mi],
-  is_holiday = future_is_holiday,
-  hour       = future_hour,
-  month      = future_month,
-  day_num    = future_day
+  is_holiday = future_is_holiday
 )
 colnames(FUTURE_FEATURE) <- colnames(FEATURE)
 
@@ -260,7 +257,7 @@ forecast_values <- sc$y_inv(preds_scaled)
 forecast_df <- data.frame(
   date_time  = future_dates,
   forecast   = round(forecast_values, 1),
-  day_of_week = DAY_LEVELS[future_day],
+  day_of_week = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")[future_day],
   hour       = future_hour,
   is_holiday = future_is_holiday
 )
