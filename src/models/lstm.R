@@ -1,7 +1,11 @@
 suppressPackageStartupMessages(library(keras3))
 suppressPackageStartupMessages(library(ggplot2))
 
-# 1. THE WINNING CONFIGURATION  (from output/models/lstm/tuning_results.csv)
+OUT <- "output/models/lstm"
+FIG <- file.path(OUT, "figures")
+dir.create(FIG, recursive = TRUE, showWarnings = FALSE)
+
+# 1. CONFIGURATION  (winning configuration from tuning_results.csv)
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 
 cfg <- list(
@@ -19,46 +23,39 @@ cfg <- list(
   seed          = 42L
 )
 
-# Fixed epoch count = round(mean(CV best_epochs)) for the winning config.
-# Winner's best_epochs were 62;40;49;44 -> mean 48.75 -> 49.
-EPOCHS <- 49L
-
+EPOCHS    <- 49L      # mean of the CV best_epochs for the winning config
 TEST_FRAC <- 0.15
-N_FOLDS   <- 4L
-ASSESS    <- 2190L
-SEASON_M  <- 168L
+SEASON_M  <- 168L     # weekly lag: seasonal-naive benchmark and MASE scale
+
+# Forward forecast horizon: one week immediately after the last observation.
+FORECAST_HOURS <- 168L
 
 # 2. DATA
 df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
 df$date_time <- as.POSIXct(df$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
 df <- df[order(df$date_time), ]
 stopifnot(
-  "NA values present" = !anyNA(df),
-  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1)
+  "NA values present"           = !anyNA(df),
+  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1),
+  "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-day_num <- match(df$day_of_week, c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+DAY_LEVELS <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+day_num <- match(df$day_of_week, DAY_LEVELS)          # Monday = 1 ... Sunday = 7
 stopifnot("unrecognised day_of_week" = !anyNA(day_num))
-cyc <- function(x, p) {
-  cbind(
-    sin(2 * pi * x / p),
-    cos(2 * pi * x / p)
-  )
-}
 
+# Nine features, taken directly from the dataset columns.
 FEATURE <- cbind(
   traffic    = df$traffic_volume,
   temp       = df$temp,
-  rain       = log1p(df$rain_1h),
-  snow       = log1p(df$snow_1h),
+  rain       = df$rain_1h,
+  snow       = df$snow_1h,
   clouds     = df$clouds_all,
   is_holiday = df$is_holiday,
-  cyc(df$hour, 24),
-  cyc(day_num - 1, 7),
-  cyc(df$month - 1, 12)
+  hour       = df$hour,
+  month      = df$month,
+  day_num    = day_num
 )
-colnames(FEATURE) <- c("traffic", "temp", "rain", "snow", "clouds", "is_holiday",
-                       "hour_sin", "hour_cos", "day_num_sin", "day_num_cos", "month_sin", "month_cos")
 
 TARGET <- df$traffic_volume
 N_ROWS <- nrow(df)
@@ -68,8 +65,8 @@ POOL_END <- TEST_START - 1L
 
 cat(sprintf("rows = %d | TRAIN pool = 1..%d (%s .. %s)\n", N_ROWS, POOL_END,
             format(df$date_time[1], "%Y-%m-%d"), format(df$date_time[POOL_END], "%Y-%m-%d")))
-cat(sprintf("           TEST      = %d..%d (%s .. %s, %.1f%%)\n\n",
-            TEST_START, N_ROWS, format(df$date_time[TEST_START], "%Y-%m-%d"),
+cat(sprintf("           TEST      = %d..%d (%s .. %s, %.1f%%)\n\n", TEST_START, N_ROWS,
+            format(df$date_time[TEST_START], "%Y-%m-%d"),
             format(df$date_time[N_ROWS], "%Y-%m-%d"), 100 * (N_ROWS - TEST_START + 1) / N_ROWS))
 
 # 3. HELPERS
@@ -121,11 +118,11 @@ metrics <- function(actual, pred, scale) {
     zeros = sum(!nz))
 }
 
-# 4. TRAIN ON THE FULL POOL — fixed epochs, no validation_data, no early stopping
+# 4. TRAIN THE MODEL  — once, on the training pool only
 set_random_seed(cfg$seed)
 
 train_rows <- 1:POOL_END
-sc <- make_scaler(train_rows)
+sc <- make_scaler(train_rows)      # this scaler is reused everywhere below
 tr <- make_windows(train_rows)
 
 cat(sprintf("Training on %d windows for exactly %d epochs (no early stopping).\n", dim(tr$x)[1], EPOCHS))
@@ -145,11 +142,10 @@ model %>% fit(
   sc$x_apply(tr$x), sc$y_apply(tr$y),
   epochs = EPOCHS, batch_size = cfg$batch_size,
   shuffle = TRUE, verbose = 2,
-  # monitors TRAINING loss only — no test data involved
   callbacks = list(callback_reduce_lr_on_plateau(monitor = "loss", factor = 0.5, patience = 4, min_lr = 1e-5))
 )
 
-# 5. TEST — touched exactly once, only to predict
+# 5. TEST EVALUATION — the test set is touched exactly once, only to predict
 te <- make_windows(TEST_START:N_ROWS)
 pred <- sc$y_inv(as.numeric(predict(model, sc$x_apply(te$x), verbose = 0)))
 naive <- TARGET[te$idx - SEASON_M]
@@ -169,228 +165,237 @@ if (out["LSTM", "zeros"] > 0)
   cat(sprintf("note: %d test rows had traffic_volume == 0, excluded from MAPE only.\n", out["LSTM", "zeros"]))
 cat("==============================================================\n")
 
-# 6. SAVE
 res <- data.frame(model = rownames(out), out, row.names = NULL)
 for (k in names(cfg)) res[[k]] <- cfg[[k]]
 res$epochs <- EPOCHS
-write.csv(res, "output/models/lstm/final_test_metrics.csv", row.names = FALSE)
+write.csv(res, file.path(OUT, "final_test_metrics.csv"), row.names = FALSE)
 
-write.csv(data.frame(date_time = df$date_time[te$idx],
-                     actual = te$y,
-                     predicted = round(pred, 2),
-                     naive = naive),
-          "output/models/lstm/final_test_predictions.csv", row.names = FALSE)
+test_df <- data.frame(date_time = df$date_time[te$idx],
+                      actual = te$y,
+                      predicted = round(pred, 2),
+                      naive = naive)
+write.csv(transform(test_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S")),
+          file.path(OUT, "final_test_predictions.csv"), row.names = FALSE)
 
-cat("\nSaved:\n  output/models/lstm/final_test_metrics.csv\n",
-    "  output/models/lstm/final_test_predictions.csv\n", sep = "")
-
-
-# ============================================================
-# FORECAST: Three-Month Forward Forecast (2018-10-01 .. 2018-12-31)
+# 6. ONE-WEEK FORWARD FORECAST  — SAME model, SAME scaler
 #
-# Two problems have to be solved to get there.
+# The horizon lies beyond the end of the record, so no actual values exist and
+# no accuracy can be measured for it. Two inputs must be supplied:
 #
-# 1. Which model to forecast with. The model trained in section 4 only saw
-#    the train pool (1:POOL_END), because the tail was held out for the
-#    honest test above. Once that test has done its job, throwing away that
-#    history would be wasteful, so the model is refit on ALL observed rows
-#    (1:N_ROWS) using the same architecture and epoch count -- standard
-#    practice once model selection is finished.
+#   Calendar (hour, month, day_num, is_holiday) — known exactly in advance.
+#   Weather  (temp, rain, snow, clouds)         — unknown, so set to climatology:
+#     the historical mean for that month and hour across the observed record.
+#     This makes the output a forecast under average seasonal weather, which is
+#     an assumption, not a weather prediction.
 #
-# 2. What to feed it for weather. temp, rain, snow, and clouds do not exist
-#    for October-December 2018. Calendar features and holidays do, because
-#    they are deterministic. The weather inputs are filled with climatology:
-#    the historical mean for that month-and-hour across the observed record
-#    (rain/snow averaged in the same log1p space FEATURE uses above). This
-#    is an explicit assumption of average seasonal weather, not a weather
-#    forecast, and it's what makes the output a scenario projection rather
-#    than a prediction.
-# ============================================================
-
-FORECAST_START <- as.POSIXct("2018-10-01 00:00:00", tz = "UTC")
-FORECAST_END   <- as.POSIXct("2018-12-31 23:00:00", tz = "UTC")
-
-# 7. BUILD THE FUTURE FEATURE FRAME
-# Everything here is known in advance without any forecasting: the calendar
-# repeats, and US federal holidays are fixed by rule.
-future_dates <- seq(FORECAST_START, FORECAST_END, by = "hour")
+# The forecast is recursive: each predicted hour is appended to the input
+# window and used to predict the next, so error compounds with horizon.
+FORECAST_START <- max(df$date_time) + 3600
+future_dates <- seq(FORECAST_START, by = "hour", length.out = FORECAST_HOURS)
 H <- length(future_dates)
-cat(sprintf("\nForecast horizon: %d hours (%s .. %s)\n", H, as.character(FORECAST_START), as.character(FORECAST_END)))
 
-future_lt       <- as.POSIXlt(future_dates)
-future_hour     <- future_lt$hour
-future_month    <- future_lt$mon + 1L
-# wday: Sunday = 0 .. Saturday = 6 -> remap to Monday = 0 .. Sunday = 6,
-# the same convention used above for day_num - 1 in cyc().
-future_day_num0 <- (future_lt$wday + 6) %% 7
+flt <- as.POSIXlt(future_dates)
+future_hour <- flt$hour
+future_month <- flt$mon + 1L
+future_day <- ((flt$wday + 6L) %% 7L) + 1L        # Monday = 1 ... Sunday = 7
 
-# Federal holidays falling inside the horizon, following the same
-# observance rule the dataset itself uses (Columbus Day = 2nd Monday of
-# October, Veterans Day = Nov 11 or the Monday after when it lands on a
-# Sunday, Thanksgiving = 4th Thursday of November, Christmas Day = Dec 25).
-future_holidays <- as.Date(c(
-  "2018-10-08",  # Columbus Day
-  "2018-11-12",  # Veterans Day (observed; Nov 11 2018 is a Sunday)
-  "2018-11-22",  # Thanksgiving Day
-  "2018-12-25"   # Christmas Day
-))
+cat(sprintf("\nForecast horizon: %d hours (%s .. %s)\n", H,
+            format(min(future_dates), "%Y-%m-%d %H:%M"),
+            format(max(future_dates), "%Y-%m-%d %H:%M")))
+
+# US federal holidays; none fall in 1-7 Oct 2018, but the list keeps the code
+# correct if the horizon is extended.
+future_holidays <- as.Date(c("2018-10-08",   # Columbus Day
+                             "2018-11-12",   # Veterans Day (observed)
+                             "2018-11-22",   # Thanksgiving
+                             "2018-12-25"))  # Christmas Day
 future_is_holiday <- as.integer(as.Date(future_dates) %in% future_holidays)
-cat(sprintf("Holiday hours in horizon: %d (%d days)\n", sum(future_is_holiday), length(future_holidays)))
+cat(sprintf("Holiday hours in horizon: %d\n", sum(future_is_holiday)))
 
-# Climatological weather: mean of each weather variable by month and hour
-# across the observed record, in the same units FEATURE already stores them
-# in (rain/snow are log1p'd there, so they're averaged in log1p space here
-# too). Means rather than medians, because the median of rain/snow is zero
-# for nearly every hour, which would encode "it never rains" instead of
-# "average precipitation".
-clim <- data.frame(
-  key    = paste(df$month, df$hour),
-  temp   = df$temp,
-  rain   = log1p(df$rain_1h),
-  snow   = log1p(df$snow_1h),
-  clouds = df$clouds_all
-)
+# Climatology by month x hour, in the same units FEATURE stores.
+clim <- data.frame(key = paste(df$month, df$hour),
+                   temp = df$temp, rain = df$rain_1h,
+                   snow = df$snow_1h, clouds = df$clouds_all)
 clim_mean <- aggregate(cbind(temp, rain, snow, clouds) ~ key, data = clim, FUN = mean)
-match_idx <- match(paste(future_month, future_hour), clim_mean$key)
-stopifnot("missing climatology for some future month/hour combo" = !anyNA(match_idx))
+mi <- match(paste(future_month, future_hour), clim_mean$key)
+stopifnot("missing climatology for some month/hour" = !anyNA(mi))
 
 FUTURE_FEATURE <- cbind(
-  traffic    = rep(NA_real_, H),   # unknown -- filled in step by step below
-  temp       = clim_mean$temp[match_idx],
-  rain       = clim_mean$rain[match_idx],
-  snow       = clim_mean$snow[match_idx],
-  clouds     = clim_mean$clouds[match_idx],
+  traffic    = rep(NA_real_, H),          # filled in recursively below
+  temp       = clim_mean$temp[mi],
+  rain       = clim_mean$rain[mi],
+  snow       = clim_mean$snow[mi],
+  clouds     = clim_mean$clouds[mi],
   is_holiday = future_is_holiday,
-  cyc(future_hour, 24),
-  cyc(future_day_num0, 7),
-  cyc(future_month - 1, 12)
+  hour       = future_hour,
+  month      = future_month,
+  day_num    = future_day
 )
 colnames(FUTURE_FEATURE) <- colnames(FEATURE)
 
-# 8. REFIT ON ALL OBSERVED DATA -- same fixed epochs, no validation, no
-# early stopping, for the same reason as section 4 above: the stopping
-# point already came from tuning on a genuine validation set.
-set_random_seed(cfg$seed)
-
-sc_full <- make_scaler(1:N_ROWS)
-tr_full <- make_windows(1:N_ROWS)
-
-cat(sprintf("\nRefitting on all %d observed windows for %d epochs...\n", dim(tr_full$x)[1], EPOCHS))
-
-model_full <- keras_model_sequential(input_shape = c(cfg$lookback, N_FEATURE))
-if (cfg$n_layers >= 2L)
-  model_full <- model_full %>% layer_lstm(units = cfg$units, dropout = cfg$dropout, recurrent_dropout = 0, return_sequences = TRUE)
-model_full <- model_full %>%
-  layer_lstm(units = cfg$units, dropout = cfg$dropout, recurrent_dropout = 0) %>%
-  layer_dense(units = cfg$horizon) %>%
-  compile(optimizer = optimizer_adam(learning_rate = cfg$learning_rate, beta_2 = cfg$beta_2, clipnorm = cfg$clipnorm),
-          loss = cfg$loss,
-          metrics = "mae")
-
-model_full %>% fit(
-  sc_full$x_apply(tr_full$x), sc_full$y_apply(tr_full$y),
-  epochs = EPOCHS, batch_size = cfg$batch_size,
-  shuffle = TRUE, verbose = 2,
-  callbacks = list(callback_reduce_lr_on_plateau(monitor = "loss", factor = 0.5, patience = 4, min_lr = 1e-5))
-)
-
-# 9. RECURSIVE MULTI-STEP FORECAST
-# One hour at a time: predict hour t+1 from the last `lookback` hours,
-# append that prediction (with hour t+1's known calendar/holiday features
-# and climatological weather) to the window, drop the oldest hour, repeat.
-# Each prediction becomes an input to the next, which is why error
-# accumulates with horizon and why the later weeks should be read as a
-# seasonal profile rather than an hour-accurate forecast.
-future_scaled <- sc_full$x_apply(array(FUTURE_FEATURE, dim = c(1, H, N_FEATURE)))[1, , ]
-window <- sc_full$x_apply(array(FEATURE[(N_ROWS - cfg$lookback + 1):N_ROWS, ], dim = c(1, cfg$lookback, N_FEATURE)))[1, , ]
+# Scale future rows and the seed window with the SAME scaler used for training.
+future_scaled <- sc$x_apply(array(FUTURE_FEATURE, dim = c(1, H, N_FEATURE)))[1, , ]
+seed_rows     <- (N_ROWS - cfg$lookback + 1L):N_ROWS      # last 48 observed hours
+window        <- sc$x_apply(array(FEATURE[seed_rows, ],
+                                  dim = c(1, cfg$lookback, N_FEATURE)))[1, , ]
 
 target_col   <- which(colnames(FEATURE) == "traffic")
 preds_scaled <- numeric(H)
 
-cat(sprintf("\nForecasting %d hours recursively...\n", H))
+cat(sprintf("Forecasting %d hours recursively with the trained model...\n", H))
 pb <- txtProgressBar(min = 0, max = H, style = 3)
 for (i in seq_len(H)) {
-  x <- array(window, dim = c(1, cfg$lookback, N_FEATURE))
-  p <- as.numeric(predict(model_full, x, verbose = 0))
+  p <- as.numeric(predict(model, array(window, dim = c(1, cfg$lookback, N_FEATURE)),
+                          verbose = 0))
   preds_scaled[i] <- p
-
-  next_row <- future_scaled[i, ]
-  next_row[target_col] <- p   # the prediction feeds itself forward
-  window <- rbind(window[-1, , drop = FALSE], next_row)
-
-  if (i %% 24 == 0 || i == H) setTxtProgressBar(pb, i)
+  nxt <- future_scaled[i, ]
+  nxt[target_col] <- p                                   # prediction feeds forward
+  window <- rbind(window[-1, , drop = FALSE], nxt)
+  if (i %% 12 == 0 || i == H) setTxtProgressBar(pb, i)
 }
 close(pb)
 
-forecast_values <- sc_full$y_inv(preds_scaled)   # y_inv already clamps to >= 0
+forecast_values <- sc$y_inv(preds_scaled)
 
 forecast_df <- data.frame(
   date_time  = future_dates,
-  forecast   = round(forecast_values),
-  is_holiday = future_is_holiday,
+  forecast   = round(forecast_values, 1),
+  day_of_week = DAY_LEVELS[future_day],
   hour       = future_hour,
-  day_num0   = future_day_num0   # Monday = 0 .. Sunday = 6
+  is_holiday = future_is_holiday
 )
-
-# Formatted to a fixed string first: write.csv() drops "00:00:00" from
-# midnight rows only, which makes the column unparseable as a single format
-# downstream.
 write.csv(transform(forecast_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S")),
-          "output/models/lstm/lstm_future_forecast.csv", row.names = FALSE)
+          file.path(OUT, "lstm_future_forecast.csv"), row.names = FALSE)
 
-# 10. SUMMARY OF THE FORECAST
-cat("\n==== Forecast summary (2018-10-01 .. 2018-12-31) ====\n")
-cat(sprintf("Mean: %.0f  Min: %.0f  Max: %.0f vehicles/h\n", mean(forecast_values), min(forecast_values), max(forecast_values)))
+cat("\n==== One-week forward forecast summary ====\n")
+cat(sprintf("mean %.0f | min %.0f | max %.0f vehicles/h\n",
+            mean(forecast_values), min(forecast_values), max(forecast_values)))
+cat(sprintf("peak at %s (%.0f veh/h)\n",
+            format(future_dates[which.max(forecast_values)], "%a %d %b %H:%M"),
+            max(forecast_values)))
+dtype <- ifelse(forecast_df$is_holiday == 1, "Holiday",
+                ifelse(future_day >= 6L, "Weekend", "Weekday"))
+print(data.frame(type  = names(tapply(forecast_df$forecast, dtype, mean)),
+                 mean  = round(as.numeric(tapply(forecast_df$forecast, dtype, mean))),
+                 hours = as.integer(table(dtype))))
+cat("NOTE: no actual values exist for this period, so no accuracy is reported.\n")
 
-cat("\nMonthly mean forecast vs same months in the observed record:\n")
-q4 <- df$month %in% c(10, 11, 12)
-obs_monthly <- tapply(df$traffic_volume[q4], df$month[q4], function(x) round(mean(x)))
-fc_month    <- as.POSIXlt(forecast_df$date_time)$mon + 1L
-fc_monthly  <- tapply(forecast_df$forecast, fc_month, function(x) round(mean(x)))
-print(data.frame(month = as.integer(names(fc_monthly)),
-                 forecast_mean = as.numeric(fc_monthly),
-                 observed_mean = as.numeric(obs_monthly[names(fc_monthly)])))
+# 7. FIGURES  — IEEE single column (3.5 in), 300 dpi.
+#    Series identity is carried by colour AND line type, so the figures remain
+#    readable when the report is printed in greyscale.
+COL_A <- "#1F6FB2"   # actual / LSTM     — solid
+COL_B <- "#D1682A"   # predicted / naive — dashed
+W <- 3.5
+DPI <- 300
 
-cat("\nForecast mean by day type:\n")
-day_type <- ifelse(forecast_df$is_holiday == 1, "Holiday",
-                   ifelse(forecast_df$day_num0 %in% c(5, 6), "Weekend", "Weekday"))
-day_means  <- tapply(forecast_df$forecast, day_type, function(x) round(mean(x)))
-day_counts <- table(day_type)
-print(data.frame(type = names(day_means),
-                 mean_forecast = as.numeric(day_means),
-                 hours = as.integer(day_counts[names(day_means)])))
+thm <- theme_minimal(base_size = 8, base_family = "serif") +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(linewidth = 0.2, colour = "grey88"),
+        axis.title  = element_text(size = 8),
+        axis.text   = element_text(size = 7, colour = "grey25"),
+        legend.position = "top", legend.title = element_blank(),
+        legend.key.width = unit(16, "pt"), legend.key.height = unit(8, "pt"),
+        legend.margin = margin(0, 0, 0, 0), legend.box.margin = margin(0, 0, -6, 0),
+        legend.text = element_text(size = 7),
+        plot.margin = margin(2, 4, 2, 2))
 
-# 11. FIGURE: OBSERVED TAIL + FORECAST
-# The last two observed months are shown alongside the forecast so the join
-# is visible -- a forecast that starts at the wrong level, or that decays
-# to a flat line, is obvious here and nowhere else.
-tail_df <- df[df$date_time >= FORECAST_START - 60 * 86400, ]
-tail_df <- data.frame(date_time = tail_df$date_time, value = tail_df$traffic_volume, series = "Observed")
-fc_plot <- data.frame(date_time = forecast_df$date_time, value = forecast_df$forecast, series = "Forecast")
+test_df$err_lstm  <- abs(test_df$actual - test_df$predicted)
+test_df$err_naive <- abs(test_df$actual - test_df$naive)
+test_df$hr        <- as.integer(format(test_df$date_time, "%H"))
+test_df$dow       <- weekdays(test_df$date_time)
 
-p_fc <- ggplot(rbind(tail_df, fc_plot), aes(x = date_time, y = value, colour = series)) +
-  geom_line(linewidth = 0.3) +
-  geom_vline(xintercept = as.numeric(FORECAST_START), linetype = "22", colour = "grey40") +
-  scale_colour_manual(values = c(Observed = "grey30", Forecast = "#d62728")) +
-  labs(title = "Tuned LSTM: Three-Month Forward Forecast",
-       subtitle = "Weather inputs set to monthly-hourly climatology",
-       x = NULL, y = "Traffic Volume (vehicles/h)", colour = NULL) +
-  theme_minimal(base_size = 11) +
-  theme(legend.position = "top")
+## --- Fig 1: actual vs predicted, one representative test week --------------
+mon <- which(test_df$dow == "Monday" & test_df$hr == 0L)
+s   <- mon[which.min(abs(mon - nrow(test_df) / 2))]
+wk  <- test_df[s:(s + 167L), ]
+d1  <- rbind(data.frame(t = wk$date_time, v = wk$actual,    series = "Actual"),
+             data.frame(t = wk$date_time, v = wk$predicted, series = "LSTM forecast"))
+d1$series <- factor(d1$series, levels = c("Actual", "LSTM forecast"))
 
-ggsave("output/models/lstm/lstm_future_forecast.png", plot = p_fc, width = 8, height = 3.6, dpi = 300)
+ggsave(file.path(FIG, "fig1_test_week.png"),
+  ggplot(d1, aes(t, v, colour = series, linetype = series)) +
+    geom_line(linewidth = 0.45) +
+    scale_colour_manual(values = c("Actual" = COL_A, "LSTM forecast" = COL_B)) +
+    scale_linetype_manual(values = c("Actual" = "solid", "LSTM forecast" = "22")) +
+    scale_x_datetime(date_breaks = "1 day", date_labels = "%a") +
+    labs(x = NULL, y = "Traffic volume (vehicles/h)") + thm,
+  width = W, height = 2.1, dpi = DPI)
 
-# 12. FIGURE: ONE FORECAST WEEK, IN DETAIL
-week_start <- FORECAST_START + 7 * 86400
-week_idx <- forecast_df$date_time >= week_start & forecast_df$date_time < week_start + 7 * 86400
+## --- Fig 2: cumulative distribution of absolute error ----------------------
+d2 <- rbind(data.frame(e = test_df$err_lstm,  series = "LSTM"),
+            data.frame(e = test_df$err_naive, series = "Seasonal naive"))
+d2$series <- factor(d2$series, levels = c("LSTM", "Seasonal naive"))
 
-p_week <- ggplot(forecast_df[week_idx, ], aes(x = date_time, y = forecast)) +
-  geom_line(colour = "#d62728", linewidth = 0.6) +
-  labs(title = "Forecast Detail: One Week (2018-10-08 .. 2018-10-14)",
-       subtitle = "Columbus Day (Mon 8 Oct) falls at the start of this week",
-       x = NULL, y = "Forecast Traffic Volume (vehicles/h)") +
-  theme_minimal(base_size = 11)
+ggsave(file.path(FIG, "fig2_error_ecdf.png"),
+  ggplot(d2, aes(e, colour = series, linetype = series)) +
+    stat_ecdf(linewidth = 0.45, pad = FALSE) +
+    scale_colour_manual(values = c("LSTM" = COL_A, "Seasonal naive" = COL_B)) +
+    scale_linetype_manual(values = c("LSTM" = "solid", "Seasonal naive" = "22")) +
+    scale_y_continuous(labels = function(x) paste0(x * 100, "%"), breaks = seq(0, 1, .25)) +
+    coord_cartesian(xlim = c(0, as.numeric(quantile(test_df$err_naive, 0.98)))) +
+    labs(x = "Absolute forecast error (vehicles/h)", y = "Cumulative % of test hours") + thm,
+  width = W, height = 2.0, dpi = DPI)
 
-ggsave("output/models/lstm/lstm_future_forecast_week.png", plot = p_week, width = 7, height = 3.2, dpi = 300)
+## --- Fig 3: mean absolute error by hour of day -----------------------------
+d3 <- rbind(
+  data.frame(hour = 0:23, mae = as.numeric(tapply(test_df$err_lstm,  test_df$hr, mean)), series = "LSTM"),
+  data.frame(hour = 0:23, mae = as.numeric(tapply(test_df$err_naive, test_df$hr, mean)), series = "Seasonal naive"))
+d3$series <- factor(d3$series, levels = c("LSTM", "Seasonal naive"))
 
-cat("\nSaved forecast and figures to: output/models/lstm\n")
+ggsave(file.path(FIG, "fig3_error_by_hour.png"),
+  ggplot(d3, aes(hour, mae, colour = series, linetype = series)) +
+    geom_line(linewidth = 0.45) +
+    scale_colour_manual(values = c("LSTM" = COL_A, "Seasonal naive" = COL_B)) +
+    scale_linetype_manual(values = c("LSTM" = "solid", "Seasonal naive" = "22")) +
+    scale_x_continuous(breaks = seq(0, 21, 3), labels = sprintf("%02d", seq(0, 21, 3))) +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, .08))) +
+    labs(x = "Hour of day", y = "Mean absolute error (vehicles/h)") + thm,
+  width = W, height = 2.0, dpi = DPI)
+
+## --- Fig 4: observed tail + one-week forward forecast ----------------------
+tail_obs <- df[df$date_time >= max(df$date_time) - 13 * 86400, ]
+d4 <- rbind(data.frame(t = tail_obs$date_time, v = tail_obs$traffic_volume, series = "Observed"),
+            data.frame(t = forecast_df$date_time, v = forecast_df$forecast, series = "Forecast"))
+d4$series <- factor(d4$series, levels = c("Observed", "Forecast"))
+
+ggsave(file.path(FIG, "fig4_future_forecast.png"),
+  ggplot(d4, aes(t, v, colour = series, linetype = series)) +
+    geom_line(linewidth = 0.4) +
+    geom_vline(xintercept = as.numeric(FORECAST_START), linewidth = 0.3,
+               linetype = "dotted", colour = "grey45") +
+    scale_colour_manual(values = c("Observed" = COL_A, "Forecast" = COL_B)) +
+    scale_linetype_manual(values = c("Observed" = "solid", "Forecast" = "22")) +
+    scale_x_datetime(date_breaks = "4 days", date_labels = "%d %b") +
+    labs(x = NULL, y = "Traffic volume (vehicles/h)") + thm,
+  width = W, height = 2.1, dpi = DPI)
+
+# 8. FIGURE FACTS — the numbers to quote when describing the figures.
+#    Do not state a value in the report that is not printed here.
+mh <- tapply(test_df$err_lstm, test_df$hr, mean)
+nh <- tapply(test_df$err_naive, test_df$hr, mean)
+cat("\n=============== FIGURE FACTS ===============\n")
+cat(sprintf("Fig 1 week shown : %s .. %s\n",
+            format(min(wk$date_time), "%d %b %Y"), format(max(wk$date_time), "%d %b %Y")))
+cat(sprintf("  actual peak %.0f | actual min %.0f | MAE in this week %.1f\n",
+            max(wk$actual), min(wk$actual), mean(abs(wk$actual - wk$predicted))))
+cat("Fig 2 absolute-error percentiles\n")
+for (q in c(.5, .9, .95, .99))
+  cat(sprintf("  p%02.0f  LSTM %7.1f | naive %7.1f\n", q * 100,
+              quantile(test_df$err_lstm, q), quantile(test_df$err_naive, q)))
+for (thr in c(100, 200, 500))
+  cat(sprintf("  %% hours error < %3d : LSTM %5.1f%% | naive %5.1f%%\n", thr,
+              100 * mean(test_df$err_lstm < thr), 100 * mean(test_df$err_naive < thr)))
+cat("Fig 3 error by hour\n")
+cat(sprintf("  LSTM  worst %02d:00 (%.1f) | best %02d:00 (%.1f)\n",
+            as.integer(names(which.max(mh))), max(mh),
+            as.integer(names(which.min(mh))), min(mh)))
+cat(sprintf("  LSTM beats naive in %d of 24 hours\n", sum(mh < nh)))
+cat("Fig 4 forecast week\n")
+cat(sprintf("  weekday mean %.0f | weekend mean %.0f\n",
+            mean(forecast_df$forecast[future_day <= 5L]),
+            mean(forecast_df$forecast[future_day >= 6L])))
+cat(sprintf("  last observed week mean %.0f | forecast week mean %.0f\n",
+            mean(tail(df$traffic_volume, 168)), mean(forecast_df$forecast)))
+cat("============================================\n")
+
+cat(sprintf("\nSaved to %s and %s\n", OUT, FIG))

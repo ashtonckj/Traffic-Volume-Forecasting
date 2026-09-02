@@ -1,12 +1,12 @@
 # =============================================================================
-# tune.R — SELF-CONTAINED hyperparameter tuning for the traffic-volume LSTM.
-#          No source() of any other file. Just: Rscript tune.R
+# tuning_lstm.R — SELF-CONTAINED hyperparameter tuning for the traffic-volume
+#                 LSTM. No source() of any other file.
 #
 #   Data     : data/processed/traffic_volume_processed.csv
 #   Protocol : 85% tuning pool / 15% locked test (test is NEVER touched here)
 #   CV       : expanding-window (anchored) rolling origin, 4 folds, purged gap
 #   Ranking  : mean MASE across all 4 folds
-#   Output   : output/models/lstm/tuning_results.csv   (appended after EVERY config)
+#   Output   : output/models/lstm/tuning_results.csv  (appended after EVERY config)
 #
 #   Restartable: a config already in the CSV is skipped. Ctrl-C is safe.
 # =============================================================================
@@ -18,6 +18,7 @@ suppressPackageStartupMessages(library(keras3))
 # =============================================================================
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 OUT_PATH <- "output/models/lstm/tuning_results.csv"
+dir.create(dirname(OUT_PATH), recursive = TRUE, showWarnings = FALSE)
 
 TEST_FRAC <- 0.15     # protocol — never tuned
 N_FOLDS <- 4L         # protocol — never tuned
@@ -29,10 +30,10 @@ MAX_CONFIGS <- Inf    # set to e.g. 2 for a timing smoke test, then back to Inf
 
 # --- THE SEARCH SPACE -------------------------------------------------------
 GRID <- list(
-  lookback      = c(48L),
+  lookback      = c(48L, 168L),
   units         = c(64L, 128L),
   n_layers      = c(1L, 2L),
-  dropout       = c(0.0),
+  dropout       = c(0.0, 0.1),
   learning_rate = c(3e-4, 1e-3, 3e-3),
   batch_size    = c(64L),
   loss          = c("mse"),
@@ -45,7 +46,7 @@ FIXED <- list(
   horizon       = 1L,
   clipnorm      = 1.0,
   beta_2        = 0.999,
-  epochs        = 100L,
+  epochs        = 150L,   # raised from 100: raw calendar inputs may need longer
   patience_stop = 10L,
   patience_lr   = 4L,
   lr_factor     = 0.5,
@@ -65,26 +66,21 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-# Cyclical encoding: raw hour 23 and hour 0 are adjacent in reality but
-# maximally distant numerically. sin/cos pairs fix that.
-dow <- match(df$day_of_week,
-             c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
-stopifnot("unrecognised day_of_week" = !anyNA(dow))
-cyc <- function(x, p) cbind(sin(2 * pi * x / p), cos(2 * pi * x / p))
+DAY_LEVELS <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+day_num <- match(df$day_of_week, DAY_LEVELS)          # Monday = 1 ... Sunday = 7
+stopifnot("unrecognised day_of_week" = !anyNA(day_num))
 
 FEAT <- cbind(
   traffic    = df$traffic_volume,
   temp       = df$temp,
-  rain       = log1p(df$rain_1h),      # zero-inflated with a long tail
-  snow       = log1p(df$snow_1h),
+  rain       = df$rain_1h,
+  snow       = df$snow_1h,
   clouds     = df$clouds_all,
   is_holiday = df$is_holiday,
-  cyc(df$hour,      24),
-  cyc(dow - 1,       7),
-  cyc(df$month - 1, 12)
+  hour       = df$hour,
+  month      = df$month,
+  day_num    = day_num
 )
-colnames(FEAT) <- c("traffic", "temp", "rain", "snow", "clouds", "is_holiday",
-                    "hour_sin", "hour_cos", "dow_sin", "dow_cos", "month_sin", "month_cos")
 
 TARGET     <- df$traffic_volume
 N          <- nrow(df)
@@ -92,8 +88,9 @@ N_FEAT     <- ncol(FEAT)
 TEST_START <- floor((1 - TEST_FRAC) * N) + 1L
 POOL_END   <- TEST_START - 1L
 
-cat(sprintf("rows = %d | %s -> %s | features = %d\n",
-            N, format(min(df$date_time)), format(max(df$date_time)), N_FEAT))
+cat(sprintf("rows = %d | %s -> %s | features = %d (%s)\n",
+            N, format(min(df$date_time)), format(max(df$date_time)), N_FEAT,
+            paste(colnames(FEAT), collapse = ", ")))
 cat(sprintf("tuning pool = 1..%d | TEST = %d..%d (locked, not used in this script)\n\n",
             POOL_END, TEST_START, N))
 
@@ -105,7 +102,7 @@ cat(sprintf("tuning pool = 1..%d | TEST = %d..%d (locked, not used in this scrip
 #
 # NOTE: va_end always equals POOL_END regardless of gap, so the validation
 # windows are IDENTICAL for every configuration. Only the training end shifts.
-# Comparisons across the grid stay fair even when lookback varies.
+# Comparisons across the grid stay fair even when look-back varies.
 # =============================================================================
 make_folds <- function(cfg) {
   gap     <- cfg$lookback + cfg$horizon - 1L
@@ -171,8 +168,7 @@ build_model <- function(cfg) {
     layer_lstm(units = cfg$units, dropout = cfg$dropout, recurrent_dropout = 0) |>
     layer_dense(units = cfg$horizon) |>
     compile(optimizer = optimizer_adam(learning_rate = cfg$learning_rate,
-                                       beta_2   = cfg$beta_2,
-                                       clipnorm = cfg$clipnorm),
+                                       beta_2 = cfg$beta_2, clipnorm = cfg$clipnorm),
             loss = cfg$loss, metrics = "mae")
 }
 
@@ -204,9 +200,9 @@ metrics <- function(actual, pred, scale) {
 # =============================================================================
 run_fold <- function(cfg, train_rows, eval_rows) {
   set_random_seed(cfg$seed)
-  sc  <- make_scaler(train_rows, cfg)
-  tr  <- make_windows(train_rows, cfg)
-  ev  <- make_windows(eval_rows,  cfg)
+  sc <- make_scaler(train_rows, cfg)
+  tr <- make_windows(train_rows, cfg)
+  ev <- make_windows(eval_rows, cfg)
   xtr <- sc$x_apply(tr$x)
   xev <- sc$x_apply(ev$x)
 
@@ -226,17 +222,16 @@ run_fold <- function(cfg, train_rows, eval_rows) {
 
   pred <- sc$y_inv(as.numeric(predict(model, xev, verbose = 0)))
   out  <- list(metrics    = metrics(ev$y, pred, mase_scale(train_rows)),
-               best_epoch = which.min(h$metrics$val_loss))
+               best_epoch = which.min(h$metrics$val_loss),
+               n_epochs   = length(h$metrics$val_loss))
   rm(xtr, xev, tr, ev, model)
-  gc(verbose = FALSE)   # free ~300 MB before the next fold
+  gc(verbose = FALSE)   # free memory before the next fold
   out
 }
 
 # =============================================================================
 # 8. GRID, RESUME, CSV
 # =============================================================================
-dir.create("results", showWarnings = FALSE)
-
 cfg_key <- function(cfg) {
   paste(vapply(TUNABLE, function(k) as.character(cfg[[k]]), ""), collapse = "|")
 }
@@ -261,7 +256,7 @@ append_row <- function(row, path) {
 done <- if (file.exists(OUT_PATH)) read.csv(OUT_PATH, stringsAsFactors = FALSE)$key else character(0)
 
 TODO <- expand.grid(GRID, stringsAsFactors = FALSE)
-TODO <- TODO[order(TODO$lookback, TODO$units, TODO$dropout), , drop = FALSE]  # cheapest first
+TODO <- TODO[order(TODO$lookback, TODO$units, TODO$n_layers, TODO$dropout), , drop = FALSE]
 if (is.finite(MAX_CONFIGS)) TODO <- TODO[seq_len(min(MAX_CONFIGS, nrow(TODO))), , drop = FALSE]
 
 cat(sprintf("== %d configurations x %d folds = %d model fits ==\n",
@@ -299,8 +294,7 @@ for (i in seq_len(nrow(TODO))) {
   times <- c(times, secs)
   M <- do.call(rbind, lapply(res, function(r) r$metrics))
 
-  row <- data.frame(key = key, timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-                    stringsAsFactors = FALSE)
+  row <- data.frame(key = key, timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"), stringsAsFactors = FALSE)
   for (k in TUNABLE) row[[k]] <- cfg[[k]]
   for (m in c("MAE", "RMSE", "MAPE", "sMAPE", "MASE")) {
     row[[paste0("mean_", m)]] <- round(mean(M[, m], na.rm = TRUE), 4)
@@ -310,14 +304,22 @@ for (i in seq_len(nrow(TODO))) {
     row[[paste0("f", f, "_MAE")]]  <- round(M[f, "MAE"],  3)
     row[[paste0("f", f, "_MASE")]] <- round(M[f, "MASE"], 4)
   }
-  row$best_epochs <- paste(vapply(res, function(r) r$best_epoch, integer(1)), collapse = ";")
+  be <- vapply(res, function(r) r$best_epoch, integer(1))
+  row$best_epochs <- paste(be, collapse = ";")
   row$secs        <- round(secs, 1)
 
   append_row(row, OUT_PATH)   # written immediately — a crash never loses finished work
 
+  # If early stopping never fired, the epoch cap bound the run and the result
+  # understates this configuration. Raise FIXED$epochs and re-run it.
+  capped <- vapply(res, function(r) r$n_epochs >= cfg$epochs, logical(1))
+  if (any(capped))
+    cat(sprintf("        WARNING: %d/%d folds hit the %d-epoch cap — raise FIXED$epochs\n",
+                sum(capped), N_FOLDS, cfg$epochs))
+
   eta_min <- mean(times) * (nrow(TODO) - i) / 60
-  cat(sprintf("MASE %.4f (sd %.4f)  MAE %.1f  RMSE %.1f  [%.0fs, ETA %.0f min]\n",
-              row$mean_MASE, row$sd_MASE, row$mean_MAE, row$mean_RMSE, secs, eta_min))
+  cat(sprintf("        MASE %.4f (sd %.4f)  MAE %.1f  RMSE %.1f  epochs %s  [%.0fs, ETA %.0f min]\n",
+              row$mean_MASE, row$sd_MASE, row$mean_MAE, row$mean_RMSE, row$best_epochs, secs, eta_min))
 }
 
 # =============================================================================
@@ -332,9 +334,21 @@ print(r[, c("lookback", "units", "n_layers", "dropout",
       row.names = FALSE, digits = 5)
 
 best <- r[1, ]
-cat(sprintf("\nBEST: lookback=%d units=%d n_layers=%d dropout=%.1f\n",
-            best$lookback, best$units, best$n_layers, best$dropout))
+cat(sprintf("\nBEST: lookback=%d units=%d n_layers=%d dropout=%.1f lr=%g\n",
+            best$lookback, best$units, best$n_layers, best$dropout, best$learning_rate))
 cat(sprintf("      mean MASE %.4f (sd %.4f) | mean MAE %.2f | best epochs %s\n",
             best$mean_MASE, best$sd_MASE, best$mean_MAE, best$best_epochs))
+
+# The standard error of a single configuration's mean. Configurations within
+# one SE of the best are not distinguishable from each other; among those,
+# prefer the smallest and cheapest (the parsimony rule).
+se <- mean(r$sd_MASE, na.rm = TRUE) / sqrt(N_FOLDS)
+tied <- sum(r$mean_MASE <= best$mean_MASE + se)
+cat(sprintf("\nStandard error of a config mean: %.4f\n", se))
+cat(sprintf("%d configuration(s) lie within one SE of the best — treat them as tied\n", tied))
+cat(sprintf("and pick the smallest/cheapest among them.\n"))
+
 cat(sprintf("\nFull results: %s\n", OUT_PATH))
-cat("Next: put these values into lstm.R and run it once to get the TEST score.\n")
+cat("Next: fix the parameters that clearly won, open the next ones in GRID,\n")
+cat("and run again. When the search is done, copy the winning values and\n")
+cat("round(mean(best_epochs)) into lstm.R.\n")
