@@ -313,369 +313,69 @@ df %>%
 # =============================================================================
 # 3. TRAIN / VALIDATION / TEST SPLIT
 # =============================================================================
-# Chronological 70/15/15 split, fixed across ALL models so MAE/RMSE/MAPE
-# comparisons are valid. Validation is for model selection / hyperparameter
-# and order tuning (e.g. picking SARIMA (p,d,q), LSTM epochs/architecture);
-# test is only touched once, at the end, for the final comparison.
+# Chronological 70/15/15 split. The `split` column is the only label added
+# here — all stationarity testing, ACF/PACF diagnostics, and differencing
+# are handled in differencing.R which runs after this script.
 
-n_total  <- nrow(df)
-train_n  <- floor(TRAIN_FRAC * n_total)
-val_n    <- floor(VAL_FRAC * n_total)
-test_n   <- n_total - train_n - val_n   # remainder, so all rows are used
+n_total <- nrow(df)
+train_n <- floor(TRAIN_FRAC * n_total)
+val_n   <- floor(VAL_FRAC * n_total)
+test_n  <- n_total - train_n - val_n
 
-split_data <- function(dataset, train_n, val_n) {
-  list(
-    full       = dataset,
-    train      = dataset %>% slice(1:train_n),
-    validation = dataset %>% slice((train_n + 1):(train_n + val_n)),
-    test       = dataset %>% slice((train_n + val_n + 1):n())
-  )
-}
+df$split <- NA_character_
+df$split[1:train_n]                       <- "train"
+df$split[(train_n + 1):(train_n + val_n)] <- "validation"
+df$split[(train_n + val_n + 1):n_total]   <- "test"
 
-splits <- split_data(df, train_n, val_n)
+cat("\n=== Train/Validation/Test Split ===\n")
+cat(sprintf("Train      : rows   1 - %d  (%s to %s)  %.1f%%\n",
+            train_n,
+            as.character(df$date_time[1]),
+            as.character(df$date_time[train_n]),
+            100 * train_n / n_total))
+cat(sprintf("Validation : rows %d - %d  (%s to %s)  %.1f%%\n",
+            train_n + 1, train_n + val_n,
+            as.character(df$date_time[train_n + 1]),
+            as.character(df$date_time[train_n + val_n]),
+            100 * val_n / n_total))
+cat(sprintf("Test       : rows %d - %d  (%s to %s)  %.1f%%\n",
+            train_n + val_n + 1, n_total,
+            as.character(df$date_time[train_n + val_n + 1]),
+            as.character(df$date_time[n_total]),
+            100 * test_n / n_total))
 
-cat("\n=== Train/Validation/Test Split Verification ===\n")
-cat("Train     :", as.character(min(splits$train$date_time)), "to",
-    as.character(max(splits$train$date_time)),
-    sprintf("(%d hours, %.1f%%)\n", nrow(splits$train), 100 * nrow(splits$train) / n_total))
-cat("Validation:", as.character(min(splits$validation$date_time)), "to",
-    as.character(max(splits$validation$date_time)),
-    sprintf("(%d hours, %.1f%%)\n", nrow(splits$validation), 100 * nrow(splits$validation) / n_total))
-cat("Test      :", as.character(min(splits$test$date_time)), "to",
-    as.character(max(splits$test$date_time)),
-    sprintf("(%d hours, %.1f%%)\n", nrow(splits$test), 100 * nrow(splits$test) / n_total))
-
+# Imputation leakage check
 for (split_name in c("validation", "test")) {
-  n_imputed <- sum(splits[[split_name]]$is_imputed)
-  if (n_imputed > 0) {
-    cat("WARNING:", n_imputed, "imputed hour(s) fall inside the", split_name, "set.\n",
-        "Seasonal Naive scores on these hours will be artificially inflated\n",
-        "since the 'ground truth' there was itself seasonal-naive-generated.\n",
-        "Recommend excluding is_imputed==1 rows from reported", split_name, "metrics.\n")
+  idx <- if (split_name == "validation") {
+    (train_n + 1):(train_n + val_n)
   } else {
-    cat("No imputed hours fall inside the", split_name, "set -- clean for cross-model comparison.\n")
+    (train_n + val_n + 1):n_total
+  }
+  n_imp <- sum(df$is_imputed[idx])
+  if (n_imp > 0) {
+    cat("WARNING:", n_imp, "imputed hour(s) in", split_name,
+        "-- exclude is_imputed==1 rows from reported metrics.\n")
+  } else {
+    cat("No imputed hours in", split_name, "-- clean for evaluation.\n")
   }
 }
 
 
 # =============================================================================
-# 3a. ACF / PACF HELPER
+# 4. SAVE
 # =============================================================================
-# Renders an ACF/PACF pair (via forecast::ggAcf / ggPacf, which return
-# ggplot objects so they can share the IEEE theme) side by side, prints and
-# saves them. Used both before differencing (Section 3a2) and after
-# (Section 3b), so the two are directly comparable.
-plot_acf_pacf <- function(x, title_prefix, fname, max_lag = ACF_MAX_LAG) {
-  x <- x[!is.na(x)]
-  max_lag <- min(max_lag, length(x) - 1)
-  
-  p_acf <- ggAcf(x, lag.max = max_lag) +
-    theme_ieee() +
-    labs(title = paste0(title_prefix, ": ACF"), x = "Lag (hours)", y = "ACF")
-  p_pacf <- ggPacf(x, lag.max = max_lag) +
-    theme_ieee() +
-    labs(title = paste0(title_prefix, ": PACF"), x = "Lag (hours)", y = "PACF")
-  
-  combined <- gridExtra::arrangeGrob(p_acf, p_pacf, ncol = 2)
-  grid::grid.newpage()
-  grid::grid.draw(combined)
-  
-  ggsave(filename = paste0(fname, ".png"), plot = combined,
-         width = IEEE_W_DOUBLE, height = IEEE_H, dpi = IEEE_DPI, units = "in")
-  cat("Saved:", paste0(fname, ".png"), "\n")
-  
-  invisible(list(acf = p_acf, pacf = p_pacf))
-}
+# Saves the cleaned dataset with raw columns only + is_imputed + split.
+# No differencing, scaling, or cyclical encoding -- those are model-specific
+# and handled in each model's own script (or in differencing.R for the
+# pre-computed differenced column).
 
-# ---- 3a2. ACF/PACF on the RAW (undifferenced) training series ----
-# This is the "before" view -- shows the strong 24h/168h seasonal spikes and
-# the slow-decaying ACF typical of a non-stationary / trending series, which
-# is what motivates differencing in the first place.
-plot_acf_pacf(
-  train_vol <- splits$train$traffic_volume,
-  title_prefix = "Raw traffic_volume (train, before differencing)",
-  fname = "eda_05_acf_pacf_before_diff"
-)
-
-
-# =============================================================================
-# 3b. STATIONARITY TESTING (ADF & KPSS) AND DIFFERENCING ORDER SELECTION
-# =============================================================================
-# Run on the TRAINING series only, so the differencing decision can't leak
-# information from the test period.
-#
-# ADF (Augmented Dickey-Fuller): H0 = series has a unit root (non-stationary).
-#   p-value < ALPHA  -> reject H0 -> evidence FOR stationarity.
-# KPSS (Kwiatkowski-Phillips-Schmidt-Shin): H0 = series IS (trend-)stationary.
-#   p-value < ALPHA  -> reject H0 -> evidence AGAINST stationarity.
-# The two null hypotheses are reversed on purpose: requiring both tests to
-# agree ("ADF says stationary" AND "KPSS says stationary") is a stricter,
-# more defensible criterion than relying on either test alone.
-
-run_stationarity_tests <- function(x, label) {
-  adf_res  <- tseries::adf.test(x, alternative = "stationary")
-  kpss_res <- tseries::kpss.test(x, null = "Level")
-  cat("\n---", label, "---\n")
-  cat(sprintf("ADF  : stat = %.4f, p-value = %s -> %s\n",
-              unname(adf_res$statistic),
-              format.pval(adf_res$p.value, digits = 4, eps = 0.01),
-              ifelse(adf_res$p.value < ALPHA,
-                     "stationary (reject H0)", "non-stationary (fail to reject H0)")))
-  cat(sprintf("KPSS : stat = %.4f, p-value = %s -> %s\n",
-              unname(kpss_res$statistic),
-              format.pval(kpss_res$p.value, digits = 4, eps = 0.01),
-              ifelse(kpss_res$p.value < ALPHA,
-                     "non-stationary (reject H0)", "stationary (fail to reject H0)")))
-  list(adf = adf_res, kpss = kpss_res)
-}
-
-is_stationary <- function(res) (res$adf$p.value < ALPHA) && (res$kpss$p.value >= ALPHA)
-
-# ---- Level (raw) series ----
-st_level <- run_stationarity_tests(train_vol, "Level (raw traffic_volume, train)")
-
-# ---- Apply non-seasonal differencing until both tests agree (cap at d = 2) ----
-# Each iteration also gets its own ACF/PACF pair so you can see the
-# autocorrelation structure change (or fail to change) with each difference.
-d <- 0
-diff_train <- train_vol
-st_current <- st_level
-while (!is_stationary(st_current) && d < 2) {
-  d <- d + 1
-  diff_train <- diff(train_vol, differences = d)
-  st_current <- run_stationarity_tests(diff_train, paste0("Difference d = ", d))
-  plot_acf_pacf(
-    diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d, " non-seasonal diff"),
-    fname = paste0("eda_06_acf_pacf_after_diff_d", d)
-  )
-}
-
-if (d == 0) {
-  cat("\nSeries is stationary at level -> no non-seasonal differencing applied (d = 0).\n")
-} else if (is_stationary(st_current)) {
-  cat("\nADF and KPSS agree the series is stationary after d =", d, "non-seasonal difference(s).\n")
-} else {
-  cat("\nADF/KPSS still disagree or indicate non-stationarity after d =", d,
-      "(capped) -- inspect eda_01/eda_04 plots for trend/structural breaks before modeling.\n")
-}
-
-# ---- Seasonal unit-root check at the weekly period (168h) ----
-# nsdiffs() (forecast pkg) runs a seasonal unit-root test (default OCSB) to
-# recommend how many seasonal differences (D) the 168h cycle needs.
-train_ts_weekly <- ts(train_vol, frequency = SEASONAL_PERIOD)
-D_seasonal <- forecast::nsdiffs(train_ts_weekly)
-cat("\nRecommended seasonal differences (D) at period =", SEASONAL_PERIOD, ":", D_seasonal, "\n")
-
-# ---- ACF/PACF after non-seasonal AND seasonal differencing combined ----
-# This is the "after" view that matters most for picking SARIMA orders: it
-# shows what's left once both the trend (d) and the weekly cycle (D) have
-# been removed. If D_seasonal == 0, this is identical to the last d-panel
-# above and is skipped to avoid a duplicate plot.
-final_diff_train <- diff_train
-if (D_seasonal > 0) {
-  final_diff_train <- diff(diff_train, lag = SEASONAL_PERIOD, differences = D_seasonal)
-  plot_acf_pacf(
-    final_diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d, " + D = ", D_seasonal,
-                          " (lag ", SEASONAL_PERIOD, ") diff"),
-    fname = "eda_07_acf_pacf_after_diff_seasonal"
-  )
-} else {
-  cat("D_seasonal = 0 -> no additional seasonal-differencing ACF/PACF panel",
-      "(same as the last non-seasonal-diff panel above).\n")
-}
-
-# ---- Re-test the COMBINED (d + D) series ----
-# The while loop above only ever tested the non-seasonal series in
-# isolation. Layering the seasonal difference on top can change the
-# stationarity verdict, so check the actual final series before trusting it.
-# NOTE ON KPSS AT THIS SAMPLE SIZE: with ~20k+ training observations, KPSS
-# has very high power and will often reject the stationarity null (p < 0.05)
-# even on series that are reasonably well-behaved -- e.g. if a slower annual
-# cycle survives lag-1/lag-168 differencing. Chasing KPSS to p >= ALPHA by
-# adding more non-seasonal differences risks over-differencing (visible as a
-# large negative spike at lag 1 in the ACF), which usually hurts forecast
-# accuracy more than the residual non-stationarity would have. So: try ONE
-# extra non-seasonal difference, capped, and log a warning rather than
-# looping indefinitely if it still doesn't pass -- inspect the ACF/PACF and
-# eda_04 (mstl) plot before adding more.
-st_final <- run_stationarity_tests(final_diff_train, paste0("Combined d = ", d, " + D = ", D_seasonal))
-
-MAX_EXTRA_D <- 1
-extra_d <- 0
-while (!is_stationary(st_final) && extra_d < MAX_EXTRA_D) {
-  extra_d <- extra_d + 1
-  final_diff_train <- diff(final_diff_train, differences = 1)
-  st_final <- run_stationarity_tests(
-    final_diff_train, paste0("Combined d = ", d + extra_d, " + D = ", D_seasonal, " (extra diff)")
-  )
-  plot_acf_pacf(
-    final_diff_train,
-    title_prefix = paste0("traffic_volume, d = ", d + extra_d, " + D = ", D_seasonal, " (extra diff)"),
-    fname = paste0("eda_08_acf_pacf_extra_diff_d", d + extra_d)
-  )
-}
-d_total <- d + extra_d
-
-if (is_stationary(st_final)) {
-  cat("\nCombined series is stationary at d_total =", d_total, ", D =", D_seasonal, ".\n")
-} else {
-  cat("\nWARNING: KPSS still rejects stationarity at d_total =", d_total, ", D =", D_seasonal,
-      "(p =", format.pval(st_final$kpss$p.value, digits = 4, eps = 0.01), ").\n",
-      "This is common with a series this long and may reflect residual annual\n",
-      "seasonality or heteroskedasticity rather than a real unit root -- do NOT\n",
-      "keep differencing blindly. Inspect eda_04_mstl.png and the latest\n",
-      "eda_08_acf_pacf_extra_diff_dN.png before adding more non-seasonal\n",
-      "differences. It is often better to let auto.arima() search (p,d,q) and\n",
-      "(P,D,Q) itself -- e.g. auto.arima(train_ts_weekly, seasonal = TRUE,\n",
-      "stepwise = FALSE, approximation = FALSE) -- and treat d_total here as a\n",
-      "diagnostic starting point rather than a hard constraint.\n", sep = "")
-}
-d <- d_total  # d now reflects the FINAL non-seasonal order used, including any extra diff
-
-cat("\n=== Stationarity Summary (training set) ===\n")
-cat("Non-seasonal differences (d):", d, "\n")
-cat("Seasonal differences (D)    :", D_seasonal, "\n")
-cat("NOTE: these (d, D) orders are diagnostic evidence from the TRAIN series.\n",
-    "Section 3c below applies them to the full dataset so the differenced\n",
-    "column ships pre-computed in the saved CSV, instead of a model-specific\n",
-    "ts object.\n", sep = "")
-
-
-# =============================================================================
-# 3c. APPLY DIFFERENCING TO THE FULL DATASET
-# =============================================================================
-# Adds a `traffic_volume_diff` column to the full dataset using the (d, D)
-# orders identified above on the TRAINING split: first d non-seasonal
-# (lag-1) differences, then D seasonal (lag = SEASONAL_PERIOD) differences
-# on top. This is diagnostic/convenience only -- auto.arima() etc. can still
-# search their own orders on the raw traffic_volume column if you prefer;
-# this column just saves you from re-deriving it downstream.
-#
-# Differencing shortens the series, so the first (d + D * SEASONAL_PERIOD)
-# rows can't have a value and are left as NA rather than dropped, keeping
-# the CSV's row count and date_time index identical to the raw column.
-
-diff_vec <- df$traffic_volume
-if (d > 0) {
-  diff_vec <- diff(diff_vec, differences = d)
-}
-if (D_seasonal > 0) {
-  diff_vec <- diff(diff_vec, lag = SEASONAL_PERIOD, differences = D_seasonal)
-}
-n_pad <- nrow(df) - length(diff_vec)
-df$traffic_volume_diff <- c(rep(NA_real_, n_pad), diff_vec)
-
-cat("\nApplied differencing to the full dataset: d =", d, "non-seasonal (lag 1), D =",
-    D_seasonal, "seasonal (lag", SEASONAL_PERIOD, ").\n")
-cat("traffic_volume_diff has", n_pad, "leading NA row(s) (rows lost to differencing).\n\n")
-
-# Re-slice train/validation/test now that the diff column exists, so
-# downstream splits carry it too.
-splits <- split_data(df, train_n, val_n)
-
-
-# =============================================================================
-# 4. MODEL-READY FEATURES (flat table, no per-model ts()/array objects)
-# =============================================================================
-# Everything below is added as plain columns on `df` and written out as CSV.
-# Any downstream tool -- R ts(), a SARIMAX xreg matrix, a Keras windowed
-# LSTM input, etc. -- can be re-derived directly from these columns, so we
-# no longer build or save separate ts_data / xreg_data / lstm array objects.
-
-# ---- 4a. Split label ----
-# Same chronological boundaries as Section 3, carried as a plain column
-# instead of a list of separate ts()/data-frame objects.
-df$split <- NA_character_
-df$split[1:train_n]                          <- "train"
-df$split[(train_n + 1):(train_n + val_n)]    <- "validation"
-df$split[(train_n + val_n + 1):n_total]      <- "test"
-
-# ---- 4b. Cyclical encoding ----
-# sin/cos encodings so e.g. hour 23 -> hour 0 doesn't look like a big jump
-# to models that treat these as ordinary numeric features (e.g. an LSTM).
-add_cyclical <- function(d) {
-  d %>%
-    mutate(
-      dow_num   = wday(date_time, week_start = 1),  # 1 = Monday
-      hour_sin  = sin(2 * pi * hour / 24),
-      hour_cos  = cos(2 * pi * hour / 24),
-      dow_sin   = sin(2 * pi * dow_num / 7),
-      dow_cos   = cos(2 * pi * dow_num / 7),
-      month_sin = sin(2 * pi * month / 12),
-      month_cos = cos(2 * pi * month / 12)
-    ) %>%
-    select(-dow_num)
-}
-df <- add_cyclical(df)
-
-# ---- 4c. Min-max scaling (fit on TRAIN rows only, to avoid leakage) ----
-scale_cols <- c("temp", "rain_1h", "snow_1h", "clouds_all", "traffic_volume")
-train_rows <- df$split == "train"
-scale_params <- lapply(scale_cols, function(col) {
-  list(min = min(df[[col]][train_rows], na.rm = TRUE),
-       max = max(df[[col]][train_rows], na.rm = TRUE))
-})
-names(scale_params) <- scale_cols
-
-for (col in names(scale_params)) {
-  rng <- scale_params[[col]]$max - scale_params[[col]]$min
-  df[[paste0(col, "_scaled")]] <- if (rng == 0) 0 else (df[[col]] - scale_params[[col]]$min) / rng
-}
-
-cat("=== Model-ready feature table ===\n")
-cat("Columns:", paste(names(df), collapse = ", "), "\n")
-cat("Rows   :", nrow(df), "\n\n")
-
-
-# =============================================================================
-# 5. SAVE (CSV only)
-# =============================================================================
-
-# 5a. Full model-ready dataset -- one flat CSV with raw + differenced +
-# cyclical + scaled columns and a split label. Filter on `split` downstream
-# for train/validation/test, and reconstruct whatever structure a given
-# model needs (ts(), xreg matrix, windowed sequences) directly from this.
-df_out <- df
-df_out$date_time <- format(df_out$date_time, "%Y-%m-%d %H:%M:%S")  # avoid
-# write.csv() silently dropping "00:00:00" on midnight rows otherwise
+df_out           <- df
+df_out$date_time <- format(df_out$date_time, "%Y-%m-%d %H:%M:%S")
 write.csv(df_out, file.path(output_dir, "traffic_volume_processed.csv"), row.names = FALSE)
-cat("Saved:", file.path(output_dir, "traffic_volume_processed.csv"), "\n")
-
-# 5b. Scaling parameters -- needed to invert the *_scaled columns back to
-# raw units later (e.g. after an LSTM prediction).
-scale_params_df <- data.frame(
-  variable = names(scale_params),
-  min      = sapply(scale_params, function(p) p$min),
-  max      = sapply(scale_params, function(p) p$max),
-  row.names = NULL
-)
-write.csv(scale_params_df, file.path(output_dir, "scale_params.csv"), row.names = FALSE)
-cat("Saved:", file.path(output_dir, "scale_params.csv"), "\n")
-
-# 5c. Stationarity test summary -- the (d, D) orders and ADF/KPSS statistics
-# used to build traffic_volume_diff, as a small CSV instead of an .rds list.
-stationarity_summary <- data.frame(
-  alpha        = ALPHA,
-  d            = d,
-  D_seasonal   = D_seasonal,
-  seasonal_period = SEASONAL_PERIOD,
-  adf_stat_level   = unname(st_level$adf$statistic),
-  adf_pvalue_level = st_level$adf$p.value,
-  kpss_stat_level  = unname(st_level$kpss$statistic),
-  kpss_pvalue_level = st_level$kpss$p.value
-)
-write.csv(stationarity_summary, file.path(output_dir, "stationarity_summary.csv"), row.names = FALSE)
-cat("Saved:", file.path(output_dir, "stationarity_summary.csv"), "\n")
+cat("\nSaved:", file.path(output_dir, "traffic_volume_processed.csv"), "\n")
+cat("Columns:", paste(names(df_out), collapse = ", "), "\n")
+cat("Rows   :", nrow(df_out), "\n")
 
 cat("\n--- Preprocessing complete ---\n")
-cat("All models -> read traffic_volume_processed.csv and filter on the `split` column\n",
-    "             (train / validation / test), then build whatever structure\n",
-    "             (ts(), xreg matrix, windowed LSTM sequences) you need from\n",
-    "             its plain columns.\n", sep = "")
-cat("Invert scaled columns -> use scale_params.csv (min/max per variable).\n")
-cat("Differencing/stationarity details -> stationarity_summary.csv\n")
-cat("ACF/PACF diagnostics -> eda_05 (before diff), eda_06_*_dN (each non-seasonal\n",
-    "diff step), eda_07 (after non-seasonal + seasonal diff), eda_08_*_dN (if an\n",
-    "extra non-seasonal diff was needed after combining with the seasonal diff).\n", sep = "")
+cat("Next step: run differencing.R to produce stationarity diagnostics\n")
+cat("           and add traffic_volume_diff (training split only) to the CSV.\n")

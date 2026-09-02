@@ -3,7 +3,7 @@
     "order": {
       "p": 5,
       "d": 0,
-      "q": 3
+      "q": 1
     },
     "seasonal_order": {
       "P": "NA",
@@ -18,10 +18,10 @@
       "note": "Pre-differenced before auto.arima; d=D=0 inside fit"
     },
     "xreg_cols": "is_holiday",
-    "AIC": 268513.257,
-    "AICc": 268513.269,
-    "BIC": 268591.3729,
-    "log_likelihood": -134246.6285
+    "AIC": 268501.7558,
+    "AICc": 268501.7656,
+    "BIC": 268572.0601,
+    "log_likelihood": -134241.8779
   },
   "stationarity": {
     "note": "Tested in differencing.R — see stationarity_summary.csv",
@@ -34,19 +34,19 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 28.4374,
-    "RMSE": 562.907,
-    "MAE": 273.5112,
-    "MAPE": 10.9329,
-    "sMAPE": 10.7686,
-    "MASE": 0.4718
+    "ME": 19.6515,
+    "RMSE": 562.5753,
+    "MAE": 273.6415,
+    "MAPE": 10.9801,
+    "sMAPE": 10.7377,
+    "MASE": 0.4721
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 6,
-    "RMSE": 563.2925,
-    "MAE": 273.7998,
-    "MAPE": 10.9186,
-    "sMAPE": 10.7311
+    "RMSE": 562.9624,
+    "MAE": 273.926,
+    "MAPE": 10.9663,
+    "sMAPE": 10.7
   },
   "split": {
     "total_n": 26304,
