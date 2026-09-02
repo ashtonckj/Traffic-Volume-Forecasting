@@ -1,6 +1,5 @@
 # ============================================================
 # Time Series Diagnostics: Metro Interstate Traffic Volume
-# Reads the PROCESSED csv (output of preprocessing.R) and produces:
 #   - ACF / PACF plots (original + differenced series)
 #   - ADF and KPSS stationarity tests (original + differenced series)
 #   - Recommended differencing orders (regular d, seasonal D at 24h and 168h)
@@ -15,7 +14,7 @@ library(tseries)    # adf.test, kpss.test
 library(jsonlite)   # write_json
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
-fig_dir  <- "output/diagnostics"
+fig_dir <- "output/diagnostics"
 json_path <- "output/diagnostics/ts_diagnostics.json"
 if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
@@ -24,8 +23,11 @@ df <- read.csv(processed_path, stringsAsFactors = FALSE)
 df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S")
 df <- df %>% arrange(date_time)
 
-# Hourly series, no gaps expected (preprocessing.R already reindexed to a
-# complete hourly grid and dropped the one unfillable long gap).
+n_all <- nrow(df)
+df <- df[df$split == "train", ]
+cat(sprintf("Using the TRAINING split only: %d of %d rows (%.1f%%).\n",
+            nrow(df), n_all, 100 * nrow(df) / n_all))
+
 stopifnot(!any(is.na(df$traffic_volume)))
 
 DAILY_PERIOD  <- 24    # hours in a day
@@ -107,8 +109,7 @@ save_acf_pacf <- function(x, max_lag, filename_prefix, title_suffix) {
 
 # ACF/PACF out to 200 lags -> long enough to see both the daily (24h) and
 # the start of the weekly (168h) seasonal spikes.
-save_acf_pacf(tv_ts_daily, max_lag = 200, filename_prefix = "original",
-              title_suffix = "Original traffic_volume series")
+save_acf_pacf(tv_ts_daily, max_lag = 200, filename_prefix = "original", title_suffix = "Original traffic_volume series")
 
 stationarity_original <- run_stationarity_tests(df$traffic_volume, "ORIGINAL series")
 ljung_original <- run_ljung_box(df$traffic_volume, lags = c(24, 48, 168),
@@ -170,16 +171,27 @@ if (d_reg > 0) {
 }
 cat("\n")
 
-tv_diff_ts <- ts(tv_work, frequency = DAILY_PERIOD)
+differenced <- (d_reg > 0 || D_daily > 0)
 
-save_acf_pacf(tv_diff_ts, max_lag = 200, filename_prefix = "differenced",
-              title_suffix = sprintf("Differenced series (d=%d, D24=%d)", d_reg, D_daily))
-
-stationarity_differenced <- run_stationarity_tests(tv_work, "DIFFERENCED series")
-ljung_differenced <- run_ljung_box(tv_work, lags = c(24, 48, 168),
-                                    fitdf = 0, label = "differenced")
+if (differenced) {
+  tv_diff_ts <- ts(tv_work, frequency = DAILY_PERIOD)
+  save_acf_pacf(tv_diff_ts, max_lag = 200, filename_prefix = "differenced",
+                title_suffix = sprintf("Differenced series (d=%d, D24=%d)", d_reg, D_daily))
+  stationarity_differenced <- run_stationarity_tests(tv_work, "DIFFERENCED series")
+  ljung_differenced <- run_ljung_box(tv_work, lags = c(24, 48, 168), fitdf = 0, label = "differenced")
+} else {
+  # With d = 0 and D = 0 the "differenced" series is the original series, so
+  # writing a second set of figures and tests would duplicate section 1 under a
+  # misleading label. The result itself -- that no differencing is required --
+  # is the finding to report.
+  cat("No differencing recommended (d = 0, D = 0).",
+      "Skipping the differenced figures and tests.\n\n")
+  stationarity_differenced <- NULL
+  ljung_differenced <- NULL
+}
 
 results$differenced <- list(
+  differencing_applied = differenced,
   d_applied = d_reg,
   D_applied_24h = D_daily,
   n_obs_after_differencing = length(tv_work),
@@ -223,6 +235,6 @@ write_json(results, json_path, auto_unbox = TRUE, pretty = TRUE, digits = 6)
 
 cat("Saved figures to '", fig_dir, "/':\n", sep = "")
 cat(" - acf_original.png / pacf_original.png\n")
-cat(" - acf_differenced.png / pacf_differenced.png\n")
+if (differenced) cat(" - acf_differenced.png / pacf_differenced.png\n")
 cat(" - stl_decomposition.png\n")
 cat("Saved all test statistics/p-values to:", json_path, "\n")
