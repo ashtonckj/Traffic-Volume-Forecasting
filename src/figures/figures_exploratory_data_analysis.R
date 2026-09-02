@@ -1,27 +1,25 @@
 # ============================================================
 # Figures for documentation: Metro Interstate Traffic Volume
-# Reads the PROCESSED csv (output of preprocessing.R)
 # ============================================================
 
 library(ggplot2)
 library(dplyr)
-library(reshape2)
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output/exploratory_data_analysis"
+output_dir <- "output/exploratory"
 if (!dir.exists(output_dir)) dir.create(output_dir)
 
 df <- read.csv(processed_path, stringsAsFactors = FALSE)
-df$date_time <- as.POSIXct(
-  df$date_time,
-  format = "%Y-%m-%d %H:%M:%S"
-)
+df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+# hour and day_of_week are no longer columns in the processed dataset, because
+# the models are restricted to the raw columns. They are derived here purely as
+# plot axes -- no model ever sees them. %H and %u are locale-independent, unlike
+# weekdays(), which returns translated names on a non-English system.
+df$hour <- as.integer(format(df$date_time, "%H"))
 df$day_of_week <- weekdays(df$date_time)
-df$day_of_week <- factor(
-  df$day_of_week,
-  levels = c(
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
-  )
+df$day_of_week <- factor( df$day_of_week,
+  levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 )
 
 df$holiday_label <- ifelse(df$is_holiday == 1, "Holiday", "No Holiday")
