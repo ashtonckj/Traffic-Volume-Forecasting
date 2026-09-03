@@ -2,58 +2,51 @@
 # Run in RStudio with Source, or from the terminal:
 # Rscript seasonal_naive_analysis.R "C:/path/to/traffic_volume_processed.csv"
 
-default_data <- "C:/Users/newcr/Downloads/traffic_volume_processed (1).csv"
-args <- commandArgs(trailingOnly = TRUE)
-data_path <- if (length(args) >= 1) args[1] else default_data
+CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 output_dir <- file.path(getwd(), "output", "seasonal_naive_r_70_15_15")
 
 seasonal_period_weekly <- 168  # same hour in the previous week
 seasonal_period_daily <- 24    # same hour on the previous day
 acf_max_lag <- 24 * 14         # two weeks
 
-if (!file.exists(data_path)) {
-  stop("Processed dataset not found: ", data_path)
-}
-dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-
 # ---- 1. Read the shared processed data ----
-data <- read.csv(data_path, stringsAsFactors = FALSE)
-if (!all(c("date_time", "traffic_volume") %in% names(data))) {
+df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
+if (!all(c("date_time", "traffic_volume") %in% names(df))) {
   stop("The dataset must contain date_time and traffic_volume columns.")
 }
-data$date_time <- as.POSIXct(data$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
-data <- data[order(data$date_time), ]
+df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+df <- df[order(df$date_time), ]
 
 # The shared processed data should already have one record per timestamp.
-if (anyDuplicated(data$date_time)) {
+if (anyDuplicated(df$date_time)) {
   stop("Duplicate timestamps found. Use the group's processed dataset.")
 }
-if (anyNA(data$traffic_volume)) {
+if (anyNA(df$traffic_volume)) {
   stop("Missing traffic_volume values found. Use the group's processed dataset.")
 }
 # ---- 1b. Shared chronological 70% / 15% / 15% split ----
 # The supplied group dataset already contains the agreed split labels.
 # Using them ensures that Seasonal Naive is evaluated on exactly the same
 # training, validation, and test observations as the other group models.
-if ("split" %in% names(data)) {
-  data$split <- tolower(trimws(as.character(data$split)))
+if ("split" %in% names(df)) {
+  df$split <- tolower(trimws(as.character(df$split)))
   required_splits <- c("train", "validation", "test")
-  if (!all(required_splits %in% unique(data$split))) {
+  if (!all(required_splits %in% unique(df$split))) {
     stop("The split column must contain train, validation, and test labels.")
   }
-  train <- data[data$split == "train", ]
-  validation <- data[data$split == "validation", ]
-  test <- data[data$split == "test", ]
+  train <- df[df$split == "train", ]
+  validation <- df[df$split == "validation", ]
+  test <- df[ddfsplit == "test", ]
 } else {
   # Fallback if the group provides an otherwise identical file without labels.
   # Training receives floor(70%) of rows, validation floor(15%), and the
   # remaining newest rows form the test set.
-  n_total <- nrow(data)
+  n_total <- nrow(df)
   n_train <- floor(0.70 * n_total)
   n_validation <- floor(0.15 * n_total)
-  train <- data[seq_len(n_train), ]
-  validation <- data[(n_train + 1):(n_train + n_validation), ]
-  test <- data[(n_train + n_validation + 1):n_total, ]
+  train <- df[seq_len(n_train), ]
+  validation <- df[(n_train + 1):(n_train + n_validation), ]
+  test <- df[(n_train + n_validation + 1):n_total, ]
 }
 if (nrow(train) <= seasonal_period_weekly) {
   stop("Not enough training data for the weekly Seasonal Naive model.")
@@ -244,13 +237,13 @@ text(168, min(acf_168 + 0.10, 0.95), labels = paste0("168 h: ", round(acf_168, 3
 dev.off()
 
 # ---- 10. Data summary and console results ----
-timestamp_gaps <- sum(as.numeric(diff(data$date_time), units = "hours") > 1)
+timestamp_gaps <- sum(as.numeric(diff(df$date_time), units = "hours") > 1)
 summary_table <- data.frame(
   metric = c("source_records", "analysis_start", "analysis_end", "training_observations",
              "validation_observations", "test_observations", "validation_start", "test_start",
              "selected_seasonal_period_hours", "weekly_mase_scale", "remaining_timestamp_gaps_over_1_hour",
              "acf_lag_24", "acf_lag_168"),
-  value = c(nrow(data), min(data$date_time), max(data$date_time), nrow(train),
+  value = c(nrow(df), min(df$date_time), max(df$date_time), nrow(train),
             nrow(validation), nrow(test), min(validation$date_time), min(test$date_time),
             selected_period, round(mase_scale_weekly, 5), timestamp_gaps,
             round(acf_24, 5), round(acf_168, 5))
