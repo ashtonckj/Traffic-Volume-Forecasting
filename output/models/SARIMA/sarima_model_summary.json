@@ -1,0 +1,53 @@
+{
+  "model": {
+    "type": "pure",
+    "order": {
+      "p": 1,
+      "d": 0,
+      "q": 2
+    },
+    "seasonal_order": {
+      "P": "NA",
+      "D": "NA",
+      "Q": "NA",
+      "s": 168
+    },
+    "differencing": {
+      "d": 0,
+      "D": 1,
+      "lag": 168
+    },
+    "xreg_cols": "None (Pure SARIMA)",
+    "AIC": 327458.3712,
+    "AICc": 327458.373,
+    "BIC": 327490.4006,
+    "log_likelihood": -163725.1856
+  },
+  "residual_tests": {
+    "Ljung_Box_lag48_p": 0,
+    "Ljung_Box_lag168_p": 0,
+    "Shapiro_Wilk_p": 0
+  },
+  "accuracy": {
+    "ME": 455.1471,
+    "RMSE": 1095.9087,
+    "MAE": 700.9196,
+    "MAPE": 25.4846,
+    "sMAPE": 31.4984,
+    "MASE": 2.0942
+  },
+  "accuracy_observed_only": {
+    "n_imputed_in_test": 0,
+    "RMSE": 1095.9087,
+    "MAE": 700.9196,
+    "MAPE": 25.4846,
+    "sMAPE": 31.4984
+  },
+  "split": {
+    "total_n": 26304,
+    "train_n": 18412,
+    "valid_h": 3945,
+    "test_h": 3947,
+    "refit_with_valid": true
+  }
+}

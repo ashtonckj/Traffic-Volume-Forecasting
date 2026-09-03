@@ -1,0 +1,53 @@
+{
+  "model": {
+    "type": "full",
+    "order": {
+      "p": 1,
+      "d": 0,
+      "q": 2
+    },
+    "seasonal_order": {
+      "P": "NA",
+      "D": "NA",
+      "Q": "NA",
+      "s": 168
+    },
+    "differencing": {
+      "d": 0,
+      "D": 1,
+      "lag": 168
+    },
+    "xreg_cols": ["is_holiday", "temp", "rain_1h", "snow_1h", "clouds_all"],
+    "AIC": 327411.7938,
+    "AICc": 327411.8019,
+    "BIC": 327483.86,
+    "log_likelihood": -163696.8969
+  },
+  "residual_tests": {
+    "Ljung_Box_lag48_p": 0,
+    "Ljung_Box_lag168_p": 0,
+    "Shapiro_Wilk_p": 0
+  },
+  "accuracy": {
+    "ME": 421.3136,
+    "RMSE": 1063.6101,
+    "MAE": 698.0917,
+    "MAPE": 25.7799,
+    "sMAPE": 30.5659,
+    "MASE": 2.0857
+  },
+  "accuracy_observed_only": {
+    "n_imputed_in_test": 0,
+    "RMSE": 1063.6101,
+    "MAE": 698.0917,
+    "MAPE": 25.7799,
+    "sMAPE": 30.5659
+  },
+  "split": {
+    "total_n": 26304,
+    "train_n": 18412,
+    "valid_h": 3945,
+    "test_h": 3947,
+    "refit_with_valid": true
+  }
+}
