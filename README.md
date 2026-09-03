@@ -25,11 +25,8 @@ Run this once in the R console:
 ```r
 install.packages(c(
   "dplyr", "tidyverse", "lubridate", "zoo", "reshape2", "tibble",
-  "ggplot2", "gridExtra",
-  "forecast", "tseries",
-  "xgboost",
-  "jsonlite",
-  "keras3"
+  "ggplot2", "gridExtra", "forecast", "tseries", "xgboost",
+  "jsonlite", "keras3"
 ))
 ```
 
@@ -117,18 +114,3 @@ Traffic-Volume-Forecasting/
         ├── xgboost/
         └── lstm/
 ```
-
-### Where to look for the results
-
-Each model folder contains its test-set accuracy, its predictions, and the plots used in
-the report. The exact filenames differ slightly between models:
-
-| Folder | Test accuracy | Predictions | One-week ahead forecast |
-| --- | --- | --- | --- |
-| `seasonal_naive/` | `accuracy_metrics.csv` | `holdout_forecasts.csv` | — (benchmark only) |
-| `sarima/`, `sarimax_*/` | `sarima_model_summary.json` | `sarima_forecast_results.csv` | `sarima_future_1week_forecast.csv` |
-| `xgboost/` | `final_test_metrics.csv` | `final_test_predictions.csv` | `xgboost_future_forecast.csv` |
-| `lstm/` | `final_test_metrics.csv` | `final_test_predictions.csv` | `lstm_future_forecast.csv` |
-
-Accuracy is reported as RMSE, MAE, MAPE, sMAPE and MASE, with RMSE as the primary
-criterion. The `.png` files in each folder are the figures for the report.
