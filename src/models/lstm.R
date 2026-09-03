@@ -43,6 +43,7 @@ stopifnot(
 # first 168 rows have no lag reference and are dropped. PREV keeps the anchor
 # y_(t-168), which diff() discards but to_level() needs.
 y_full <- df$traffic_volume
+split_full <- df$split
 TARGET <- diff(y_full, lag = SEASON_M, differences = D_ORDER)
 df     <- df[-(1:(SEASON_M * D_ORDER)), , drop = FALSE]
 rownames(df) <- NULL
@@ -114,8 +115,7 @@ make_scaler <- function(train_rows) {
 
 # MASE denominator: in-sample seasonal-naive MAE on TRAINING rows, original scale.
 mase_scale <- function(train_rows, m = SEASON_M) {
-  y <- LEVEL[train_rows]
-  mean(abs(y[(m + 1):length(y)] - y[1:(length(y) - m)]))
+  mean(abs(train_rows[(m + 1):length(train_rows)] - train_rows[1:(length(train_rows) - m)]))
 }
 
 metrics <- function(actual, pred, scale) {
@@ -164,7 +164,7 @@ te <- make_windows(TEST_START:N_ROWS)
 pred <- to_level(sc$y_inv(as.numeric(predict(model, sc$x_apply(te$x), verbose = 0))), te$idx)
 actual <- LEVEL[te$idx]
 naive <- PREV[te$idx]      # seasonal naive = same hour last week = zero change
-scale <- mase_scale(train_rows)
+scale <- mase_scale(y_full[split_full == "train"])
 
 out <- rbind(LSTM = metrics(actual, pred, scale), `seasonal-naive` = metrics(actual, naive, scale))
 
@@ -305,8 +305,6 @@ print(data.frame(type  = names(tapply(forecast_df$forecast, dtype, mean)),
 cat("NOTE: no actual values exist for this period, so no accuracy is reported.\n")
 
 # 7. FIGURES  — IEEE single column (3.5 in), 300 dpi.
-#    Series identity is carried by colour AND line type, so the figures remain
-#    readable when the report is printed in greyscale.
 COL_A <- "#1F6FB2"   # actual / LSTM     — solid
 COL_B <- "#D1682A"   # predicted / naive — dashed
 W <- 3.5
