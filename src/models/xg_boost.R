@@ -2017,15 +2017,7 @@ cat(
 # 15. OUTPUT DIRECTORY
 # ================================================================
 
-output_dir <- file.path(
-  dirname(
-    data_path
-  ),
-  "..",
-  "outputs",
-  "models",
-  "xgboost"
-)
+output_dir <- "output/models/xgboost"
 
 
 dir.create(
