@@ -255,6 +255,38 @@ D_APPLIED <- 1
 d_APPLIED <- 0
 
 
+# ---- helper: ACF and PACF side by side in one figure ----
+# gridExtra::arrangeGrob puts the two panels in one row so the pair can be
+# dropped into the report as a single figure. The separate acf_*.png /
+# pacf_*.png files from Section 1 and 3 are still written as well.
+save_acf_pacf_pair <- function(x, max_lag, filename, title_prefix, width = 12, height = 4.5) {
+  x <- x[!is.na(x)]
+  max_lag <- min(max_lag, length(x) - 1)
+
+  p_acf <- ggAcf(x, lag.max = max_lag) +
+    labs(title = paste0(title_prefix, ": ACF"), x = "Lag (hours)", y = "ACF") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+  p_pacf <- ggPacf(x, lag.max = max_lag) +
+    labs(title = paste0(title_prefix, ": PACF"), x = "Lag (hours)", y = "PACF") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5))
+
+  combined <- gridExtra::arrangeGrob(p_acf, p_pacf, ncol = 2)
+  grid::grid.newpage()
+  grid::grid.draw(combined)
+
+  ggsave(file.path(fig_dir, paste0(filename, ".png")), combined, width = width, height = height, dpi = 300)
+  cat("Saved:", paste0(filename, ".png"), "\n")
+}
+
+
+# ---- Paired ACF/PACF for the original series ----
+save_acf_pacf_pair(df$traffic_volume, max_lag = 2 * WEEKLY_PERIOD,
+                   filename = "acf_pacf_original",
+                   title_prefix = "Original traffic volume (train)")
+
+
 # ============================================================
 # 6. Multi-seasonal STL decomposition (24 h + 168 h)
 # ============================================================
@@ -286,13 +318,14 @@ cat(sprintf("Seasonal difference D = %d at lag %d applied: %d observations remai
 
 save_acf_pacf(tv_seasonal168, max_lag = 2 * WEEKLY_PERIOD,
               filename_prefix = "seasonal168",
-              title_suffix = sprintf("Seasonally differenced (D=%d at lag %d, d=%d)",
-                                     D_APPLIED, WEEKLY_PERIOD, d_APPLIED))
+              title_suffix = sprintf("Seasonally differenced (D=%d at lag %d, d=%d)", D_APPLIED, WEEKLY_PERIOD, d_APPLIED))
 
-stationarity_seasonal168 <- run_stationarity_tests(tv_seasonal168,
-                                                   "SEASONALLY DIFFERENCED series (D=1, lag 168)")
-ljung_seasonal168 <- run_ljung_box(tv_seasonal168, lags = c(24, 48, 168),
-                                   fitdf = 0, label = "seasonal168")
+save_acf_pacf_pair(tv_seasonal168, max_lag = 2 * WEEKLY_PERIOD,
+                   filename = "acf_pacf_seasonal168",
+                   title_prefix = sprintf("Seasonally differenced (D = %d at lag %d, d = %d)", D_APPLIED, WEEKLY_PERIOD, d_APPLIED))
+
+stationarity_seasonal168 <- run_stationarity_tests(tv_seasonal168, "SEASONALLY DIFFERENCED series (D=1, lag 168)")
+ljung_seasonal168 <- run_ljung_box(tv_seasonal168, lags = c(24, 48, 168), fitdf = 0, label = "seasonal168")
 
 if (stationarity_seasonal168$adf$stationary && stationarity_seasonal168$kpss_level$stationary) {
   cat("ADF and KPSS agree: the seasonally differenced series is stationary.\n\n")
@@ -321,5 +354,6 @@ write_json(results_seasonal168, file.path(fig_dir, "ts_diagnostics_seasonal168.j
            auto_unbox = TRUE, pretty = TRUE, digits = 6)
 
 cat(" - acf_seasonal168.png / pacf_seasonal168.png\n")
+cat(" - acf_pacf_original.png / acf_pacf_seasonal168.png (paired)\n")
 cat(" - mstl_decomposition.png\n")
 cat("Saved added test statistics to:", file.path(fig_dir, "ts_diagnostics_seasonal168.json"), "\n")
