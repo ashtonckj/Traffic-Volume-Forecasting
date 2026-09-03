@@ -11,43 +11,22 @@ acf_max_lag <- 24 * 14         # two weeks
 
 # ---- 1. Read the shared processed data ----
 df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
-if (!all(c("date_time", "traffic_volume") %in% names(df))) {
-  stop("The dataset must contain date_time and traffic_volume columns.")
-}
 df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
 df <- df[order(df$date_time), ]
 
 # The shared processed data should already have one record per timestamp.
-if (anyDuplicated(df$date_time)) {
-  stop("Duplicate timestamps found. Use the group's processed dataset.")
-}
-if (anyNA(df$traffic_volume)) {
-  stop("Missing traffic_volume values found. Use the group's processed dataset.")
-}
+stopifnot(
+  "NA values present"           = !anyNA(df),
+  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1),
+  "duplicate timestamps"        = !any(duplicated(df$date_time))
+)
 # ---- 1b. Shared chronological 70% / 15% / 15% split ----
 # The supplied group dataset already contains the agreed split labels.
 # Using them ensures that Seasonal Naive is evaluated on exactly the same
 # training, validation, and test observations as the other group models.
-if ("split" %in% names(df)) {
-  df$split <- tolower(trimws(as.character(df$split)))
-  required_splits <- c("train", "validation", "test")
-  if (!all(required_splits %in% unique(df$split))) {
-    stop("The split column must contain train, validation, and test labels.")
-  }
-  train <- df[df$split == "train", ]
-  validation <- df[df$split == "validation", ]
-  test <- df[ddfsplit == "test", ]
-} else {
-  # Fallback if the group provides an otherwise identical file without labels.
-  # Training receives floor(70%) of rows, validation floor(15%), and the
-  # remaining newest rows form the test set.
-  n_total <- nrow(df)
-  n_train <- floor(0.70 * n_total)
-  n_validation <- floor(0.15 * n_total)
-  train <- df[seq_len(n_train), ]
-  validation <- df[(n_train + 1):(n_train + n_validation), ]
-  test <- df[(n_train + n_validation + 1):n_total, ]
-}
+train <- df[df$split == "train", ]
+validation <- df[df$split == "validation", ]
+test <- df[df$split == "test", ]
 if (nrow(train) <= seasonal_period_weekly) {
   stop("Not enough training data for the weekly Seasonal Naive model.")
 }
