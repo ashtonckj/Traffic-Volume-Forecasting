@@ -273,8 +273,6 @@ save_acf_pacf_pair <- function(x, max_lag, filename, title_prefix, width = 12, h
     theme(plot.title = element_text(hjust = 0.5))
 
   combined <- gridExtra::arrangeGrob(p_acf, p_pacf, ncol = 2)
-  grid::grid.newpage()
-  grid::grid.draw(combined)
 
   ggsave(file.path(fig_dir, paste0(filename, ".png")), combined, width = width, height = height, dpi = 300)
   cat("Saved:", paste0(filename, ".png"), "\n")
