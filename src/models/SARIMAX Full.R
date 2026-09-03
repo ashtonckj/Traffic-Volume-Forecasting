@@ -27,7 +27,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 
 # ── 1. Paths & Model Configuration ───────────────────────────
-MODEL_TYPE <- "full" # Options: "pure", "holiday", "full"
+MODEL_TYPE <- "pure" # Options: "pure", "holiday", "full"
 
 output_dir <- switch(MODEL_TYPE,
                      "pure"    = "output/models/SARIMA",
