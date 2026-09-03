@@ -5,7 +5,6 @@ CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 OUT_PATH <- "output/models/lstm/tuning_results.csv"
 dir.create(dirname(OUT_PATH), recursive = TRUE, showWarnings = FALSE)
 
-TEST_FRAC <- 0.15     # protocol — never tuned
 N_FOLDS   <- 4L       # protocol — never tuned
 ASSESS    <- 2190L    # protocol — 3-month validation window
 SEASON_M  <- 168L     # weekly lag: differencing, seasonal-naive benchmark, MASE scale
@@ -48,11 +47,10 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-# Seasonal differencing, D = 1 at lag 168, applied before anything reaches the
-# model — the same diff() call the SARIMAX model uses, so all models receive an
-# identically transformed target. The first 168 rows have no lag reference and
-# are dropped. PREV keeps the lag anchor y_(t-168), which diff() discards but
-# to_level() needs to turn a predicted change back into a volume.
+# Seasonal differencing, D = 1 at lag 168 — the same diff() call the SARIMAX
+# model uses, so every model receives an identically transformed target. The
+# first 168 rows have no lag reference and are dropped. PREV keeps the anchor
+# y_(t-168), which diff() discards but to_level() needs.
 y_full <- df$traffic_volume
 TARGET <- diff(y_full, lag = SEASON_M, differences = D_ORDER)
 df     <- df[-(1:(SEASON_M * D_ORDER)), , drop = FALSE]
@@ -123,7 +121,7 @@ make_windows <- function(rows, cfg) {
 to_level <- function(pred, idx) pmax(0, PREV[idx] + pred)
 
 # Standardisation fitted on TRAINING rows only — never the whole series.
-make_scaler <- function(train_rows, cfg) {
+make_scaler <- function(train_rows) {
   mu <- colMeans(FEAT[train_rows, , drop = FALSE])
   sd <- apply(FEAT[train_rows, , drop = FALSE], 2, stats::sd)
   sd[sd == 0] <- 1
@@ -177,7 +175,7 @@ metrics <- function(actual, pred, scale) {
 # 6. ONE FOLD — fresh weights every call, so nothing leaks between folds
 run_fold <- function(cfg, train_rows, eval_rows) {
   set_random_seed(cfg$seed)
-  sc <- make_scaler(train_rows, cfg)
+  sc <- make_scaler(train_rows)
   tr <- make_windows(train_rows, cfg)
   ev <- make_windows(eval_rows, cfg)
   xtr <- sc$x_apply(tr$x)
@@ -326,6 +324,5 @@ cat(sprintf("%d configuration(s) lie within one SE of the best — treat them as
 cat("and pick the smallest/cheapest among them.\n")
 
 cat(sprintf("\nFull results: %s\n", OUT_PATH))
-cat("Next: fix the parameters that clearly won, open the next ones in GRID,\n")
-cat("and run again. When the search is done, copy the winning values and\n")
-cat("round(mean(best_epochs)) into lstm.R.\n")
+cat("Next: fix what clearly won, open the next parameters in GRID, run again.\n")
+cat("When done, copy the winner and round(mean(best_epochs)) into lstm.R.\n")

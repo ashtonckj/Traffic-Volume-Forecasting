@@ -16,7 +16,6 @@ cfg <- list(
   learning_rate = 0.003,
   batch_size    = 64L,
   loss          = "mse",
-  target_log    = FALSE,
   horizon       = 1L,
   clipnorm      = 1.0,
   beta_2        = 0.999,
@@ -24,7 +23,6 @@ cfg <- list(
 )
 
 EPOCHS    <- 10L      # mean of the CV best_epochs for the winning config
-TEST_FRAC <- 0.15
 SEASON_M  <- 168L     # weekly lag: differencing, seasonal-naive benchmark, MASE scale
 D_ORDER   <- 1L       # seasonal differencing order, matched across all four models
 
@@ -41,11 +39,10 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-# Seasonal differencing, D = 1 at lag 168, applied before anything reaches the
-# model — the same diff() call the SARIMAX model uses, so all models receive an
-# identically transformed target. The first 168 rows have no lag reference and
-# are dropped. PREV keeps the lag anchor y_(t-168), which diff() discards but
-# to_level() needs to turn a predicted change back into a volume.
+# Seasonal differencing, D = 1 at lag 168 — the same diff() call the SARIMAX
+# model uses, so every model receives an identically transformed target. The
+# first 168 rows have no lag reference and are dropped. PREV keeps the anchor
+# y_(t-168), which diff() discards but to_level() needs.
 y_full <- df$traffic_volume
 TARGET <- diff(y_full, lag = SEASON_M, differences = D_ORDER)
 df     <- df[-(1:(SEASON_M * D_ORDER)), , drop = FALSE]
@@ -105,7 +102,6 @@ make_scaler <- function(train_rows) {
   mu_y <- mean(TARGET[train_rows])
   sd_y <- stats::sd(TARGET[train_rows])
   list(
-    mu = mu, sd = sd,
     x_apply = function(a) {
       for (j in seq_len(N_FEATURE)) a[, , j] <- (a[, , j] - mu[j]) / sd[j]
       a
@@ -212,9 +208,8 @@ write.csv(transform(test_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S"))
 #
 # The forecast is recursive: each predicted change is appended to the input
 # window and used to predict the next, so error compounds with horizon. The
-# integration anchor is different, though: y_(t-168) for the first 168 steps is
-# an OBSERVED volume, so within a one-week horizon the level never has to be
-# built from earlier predictions and no drift accumulates in the anchor.
+# integration anchor y_(t-168) is an OBSERVED volume for the first 168 steps,
+# so within a one-week horizon no drift accumulates in the level itself.
 FORECAST_START <- max(df$date_time) + 3600
 future_dates <- seq(FORECAST_START, by = "hour", length.out = FORECAST_HOURS)
 H <- length(future_dates)
@@ -258,7 +253,7 @@ colnames(FUTURE_FEATURE) <- colnames(FEATURE)
 
 # Scale future rows and the seed window with the SAME scaler used for training.
 future_scaled <- sc$x_apply(array(FUTURE_FEATURE, dim = c(1, H, N_FEATURE)))[1, , ]
-seed_rows     <- (N_ROWS - cfg$lookback + 1L):N_ROWS      # last 48 observed hours
+seed_rows     <- (N_ROWS - cfg$lookback + 1L):N_ROWS      # last lookback observed hours
 window        <- sc$x_apply(array(FEATURE[seed_rows, ],
                                   dim = c(1, cfg$lookback, N_FEATURE)))[1, , ]
 
@@ -279,8 +274,7 @@ for (i in seq_len(H)) {
 close(pb)
 
 # Integrate: each predicted change is added to the volume 168 hours earlier.
-# lev grows as the horizon passes 168 h, at which point the anchor itself
-# becomes a prediction; within one week that never happens.
+# Past 168 h the anchor would itself be a prediction; within one week it is not.
 deltas <- sc$y_inv(preds_scaled)
 lev <- c(LEVEL, numeric(H))
 for (i in seq_len(H)) lev[N_ROWS + i] <- max(0, lev[N_ROWS + i - SEASON_M] + deltas[i])
