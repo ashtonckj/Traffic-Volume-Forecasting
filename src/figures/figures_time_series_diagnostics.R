@@ -12,6 +12,10 @@ library(ggplot2)
 library(forecast)   # ggAcf, ggPacf, ndiffs, nsdiffs, mstl
 library(tseries)    # adf.test, kpss.test
 library(jsonlite)   # write_json
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(gridExtra)  # arrange ACF/PACF pairs side by side
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
 fig_dir <- "output/diagnostics"
@@ -238,3 +242,84 @@ cat(" - acf_original.png / pacf_original.png\n")
 if (differenced) cat(" - acf_differenced.png / pacf_differenced.png\n")
 cat(" - stl_decomposition.png\n")
 cat("Saved all test statistics/p-values to:", json_path, "\n")
+
+# ============================================================
+# ADDED DIAGNOSTICS
+# ============================================================
+# Section 3 above applies whatever ndiffs()/nsdiffs() recommend at the daily
+# period. The group specification is different: one seasonal difference at
+# lag 168 and no non-seasonal difference. The sections below test that exact
+# transformation, so the figures match what every model actually receives.
+
+D_APPLIED <- 1
+d_APPLIED <- 0
+
+
+# ============================================================
+# 6. Multi-seasonal STL decomposition (24 h + 168 h)
+# ============================================================
+# mstl() accepts more than one seasonal period, unlike the single-period
+# decomposition in Section 4, so the daily and weekly cycles are separated
+# instead of being pooled into one seasonal component.
+decomp_msts <- mstl(msts(df$traffic_volume,
+                         seasonal.periods = c(DAILY_PERIOD, WEEKLY_PERIOD)))
+
+p_msts <- autoplot(decomp_msts) +
+  labs(title = "Multi-Seasonal STL Decomposition (24h + 168h)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave(file.path(fig_dir, "mstl_decomposition.png"), p_msts, width = 9, height = 7, dpi = 300)
+
+rem_msts <- decomp_msts[, "Remainder"]
+strength_24  <- max(0, 1 - var(rem_msts) / var(rem_msts + decomp_msts[, "Seasonal24"]))
+strength_168 <- max(0, 1 - var(rem_msts) / var(rem_msts + decomp_msts[, "Seasonal168"]))
+cat(sprintf("Seasonal strength -> 24h: %.3f | 168h: %.3f\n\n", strength_24, strength_168))
+
+
+# ============================================================
+# 7. Diagnostics on the group specification (D = 1 at lag 168, d = 0)
+# ============================================================
+tv_seasonal168 <- diff(df$traffic_volume, lag = WEEKLY_PERIOD, differences = D_APPLIED)
+cat(sprintf("Seasonal difference D = %d at lag %d applied: %d observations remain (%d lost).\n\n",
+            D_APPLIED, WEEKLY_PERIOD, length(tv_seasonal168),
+            length(df$traffic_volume) - length(tv_seasonal168)))
+
+save_acf_pacf(tv_seasonal168, max_lag = 2 * WEEKLY_PERIOD,
+              filename_prefix = "seasonal168",
+              title_suffix = sprintf("Seasonally differenced (D=%d at lag %d, d=%d)",
+                                     D_APPLIED, WEEKLY_PERIOD, d_APPLIED))
+
+stationarity_seasonal168 <- run_stationarity_tests(tv_seasonal168,
+                                                   "SEASONALLY DIFFERENCED series (D=1, lag 168)")
+ljung_seasonal168 <- run_ljung_box(tv_seasonal168, lags = c(24, 48, 168),
+                                   fitdf = 0, label = "seasonal168")
+
+if (stationarity_seasonal168$adf$stationary && stationarity_seasonal168$kpss_level$stationary) {
+  cat("ADF and KPSS agree: the seasonally differenced series is stationary.\n\n")
+} else {
+  cat("ADF and KPSS disagree. Over a series this long a KPSS rejection often\n",
+      "reflects residual annual structure rather than a unit root; inspect\n",
+      "mstl_decomposition.png before considering a further difference.\n\n", sep = "")
+}
+
+
+# ============================================================
+# 8. Save the added results
+# ============================================================
+results_seasonal168 <- list(
+  d_applied = d_APPLIED,
+  D_applied = D_APPLIED,
+  seasonal_period = WEEKLY_PERIOD,
+  n_obs_after_differencing = length(tv_seasonal168),
+  stationarity = stationarity_seasonal168,
+  ljung_box = ljung_seasonal168,
+  mstl = list(periods = c(DAILY_PERIOD, WEEKLY_PERIOD),
+              seasonal_strength_24h = strength_24,
+              seasonal_strength_168h = strength_168)
+)
+write_json(results_seasonal168, file.path(fig_dir, "ts_diagnostics_seasonal168.json"),
+           auto_unbox = TRUE, pretty = TRUE, digits = 6)
+
+cat(" - acf_seasonal168.png / pacf_seasonal168.png\n")
+cat(" - mstl_decomposition.png\n")
+cat("Saved added test statistics to:", file.path(fig_dir, "ts_diagnostics_seasonal168.json"), "\n")
