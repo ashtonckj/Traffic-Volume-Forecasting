@@ -1,0 +1,44 @@
+===================== FINAL TEST RESULTS =====================
+period: 2018-04-26 .. 2018-09-30   (3779 hours)
+                    MAE     RMSE    MAPE  sMAPE   MASE zeros
+LSTM           172.3882 269.1672  7.7515 7.8534 0.4908     0
+seasonal-naive 253.1013 527.7470 10.2515 9.2683 0.7206     0
+
+improvement over seasonal-naive: MAE 31.9%  RMSE 49.0%
+==============================================================
+
+
+
+Forecast horizon: 168 hours (2018-10-01 00:00 .. 2018-10-07 23:00)
+Holiday hours in horizon: 0
+Forecasting 168 hours recursively with the trained model...
+  |======================================================================| 100%
+
+==== One-week forward forecast summary ====
+mean 3396 | min 230 | max 6608 vehicles/h
+peak at Tue 02 Oct 16:00 (6608 veh/h)
+mean predicted week-on-week change +8.2 veh/h (range -17 .. +29)
+     type mean hours
+1 Weekday 3647   120
+2 Weekend 2769    48
+NOTE: no actual values exist for this period, so no accuracy is reported.
+
+=============== FIGURE FACTS ===============
+Differencing: D = 1 at lag 168
+Fig 1 week shown : 16 Jul 2018 .. 22 Jul 2018
+  actual peak 6606 | actual min 274 | MAE in this week 125.4
+Fig 2 absolute-error percentiles
+  p50  LSTM   110.4 | naive   127.0
+  p90  LSTM   382.5 | naive   544.2
+  p95  LSTM   518.5 | naive   778.1
+  p99  LSTM   981.6 | naive  2500.1
+  % hours error < 100 : LSTM  46.8% | naive  43.2%
+  % hours error < 200 : LSTM  69.9% | naive  64.0%
+  % hours error < 500 : LSTM  94.4% | naive  88.1%
+Fig 3 error by hour
+  LSTM  worst 23:00 (285.7) | best 03:00 (57.3)
+  LSTM beats naive in 20 of 24 hours
+Fig 4 forecast week
+  weekday mean 3647 | weekend mean 2769
+  last observed week mean 3388 | forecast week mean 3396
+============================================
