@@ -1,0 +1,48 @@
+{
+  "d_applied": 0,
+  "D_applied": 1,
+  "seasonal_period": 168,
+  "n_obs_after_differencing": 18244,
+  "stationarity": {
+    "adf": {
+      "statistic": -15.793437,
+      "p_value": 0.01,
+      "stationary": true
+    },
+    "kpss_level": {
+      "statistic": 0.046074,
+      "p_value": 0.1,
+      "stationary": true
+    },
+    "kpss_trend": {
+      "statistic": 0.0322,
+      "p_value": 0.1,
+      "stationary": true
+    }
+  },
+  "ljung_box": [
+    {
+      "lag": 24,
+      "statistic": 40409.336933,
+      "p_value": 0,
+      "autocorrelated": true
+    },
+    {
+      "lag": 48,
+      "statistic": 46141.812081,
+      "p_value": 0,
+      "autocorrelated": true
+    },
+    {
+      "lag": 168,
+      "statistic": 57895.003087,
+      "p_value": 0,
+      "autocorrelated": true
+    }
+  ],
+  "mstl": {
+    "periods": [24, 168],
+    "seasonal_strength_24h": 0.966422,
+    "seasonal_strength_168h": 0.851212
+  }
+}

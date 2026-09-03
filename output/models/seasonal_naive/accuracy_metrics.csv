@@ -1,0 +1,4 @@
+"model","n_observed","MAE","RMSE","MAPE_percent","sMAPE_percent","MASE"
+"Weekly Seasonal Naive (m=168)",3947,703.806,1097.448,25.467,31.458,2.103
+"Daily Seasonal Naive (m=24)",3947,629.383,1144.822,32.159,21.716,1.88
+"Naive persistence",3947,2010.982,2571.431,250.493,61.003,6.008

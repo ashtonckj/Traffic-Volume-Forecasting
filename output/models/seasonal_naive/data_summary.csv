@@ -1,0 +1,14 @@
+"metric","value"
+"source_records",26304
+"analysis_start",1443657600
+"analysis_end",1538348400
+"training_observations",18412
+"validation_observations",3945
+"test_observations",3947
+"validation_start",1509940800
+"test_start",1524142800
+"selected_seasonal_period_hours",168
+"weekly_mase_scale",334.70182
+"remaining_timestamp_gaps_over_1_hour",0
+"acf_lag_24",0.86614
+"acf_lag_168",0.94245
