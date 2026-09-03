@@ -4,6 +4,9 @@
 
 library(ggplot2)
 library(dplyr)
+library(reshape2)   # melt(), used by the correlation heatmap below
+library(forecast)    # ggseasonplot
+library(lubridate)   # floor_date, year, month
 
 processed_path <- "data/processed/traffic_volume_processed.csv"
 output_dir <- "output/exploratory"
@@ -89,3 +92,53 @@ cat(" - boxplot_day_of_week.png\n")
 cat(" - boxplot_holiday.png\n")
 cat(" - line_avg_traffic_by_hour.png\n")
 cat(" - correlation_heatmap.png\n")
+
+# ---- 6. Hourly profile split by weekday and weekend ----
+# Separates the daily cycle by day type, showing that weekday and weekend
+# profiles differ substantially and that one weekly seasonal period has to
+# absorb both shapes implicitly.
+day_profile <- df %>%
+  mutate(day_type = ifelse(day_of_week %in% c("Saturday", "Sunday"), "Weekend", "Weekday")) %>%
+  group_by(day_type, hour) %>%
+  summarise(avg_volume = mean(traffic_volume, na.rm = TRUE), .groups = "drop")
+
+p8 <- ggplot(day_profile, aes(x = hour, y = avg_volume, colour = day_type)) +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  labs(title = "Average Hourly Traffic Profile: Weekday vs Weekend",
+       x = "Hour of Day", y = "Average Traffic Volume (vehicles/hr)", colour = NULL) +
+  theme_minimal() +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+ggsave(file.path(output_dir, "hourly_profile_by_day_type.png"), p8, width = 7, height = 3, dpi = 300)
+
+
+# ---- 7. Monthly-aggregated seasonal plot (annual pattern) ----
+# Each line is one calendar year, so overlapping lines show whether the
+# annual shape repeats from year to year.
+monthly_ts <- df %>%
+  mutate(ym = floor_date(date_time, "month")) %>%
+  group_by(ym) %>%
+  summarise(avg_volume = mean(traffic_volume, na.rm = TRUE), .groups = "drop") %>%
+  pull(avg_volume) %>%
+  ts(start = c(year(min(df$date_time)), month(min(df$date_time))), frequency = 12)
+
+p9 <- ggseasonplot(monthly_ts, year.labels = TRUE, year.labels.left = TRUE) +
+  labs(title = "Monthly-Aggregated Seasonal Plot",
+       x = "Month", y = "Average Traffic Volume (vehicles/hr)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave(file.path(output_dir, "monthly_seasonal_plot.png"), p9, width = 7, height = 3, dpi = 300)
+
+
+# ---- 8. Summary statistics ----
+cat("\n=== Summary Statistics: traffic_volume ===\n")
+summary_stats <- df %>%
+  summarise(n = n(),
+            Min = min(traffic_volume), Median = median(traffic_volume),
+            Mean = round(mean(traffic_volume), 1), Max = max(traffic_volume),
+            SD = round(sd(traffic_volume), 1))
+write.csv(summary_stats, file.path(output_dir, "summary_statistics.csv"), row.names = FALSE)
+
+cat(" - hourly_profile_by_day_type.png\n")
+cat(" - monthly_seasonal_plot.png\n")
+cat(" - summary_statistics.csv\n")
