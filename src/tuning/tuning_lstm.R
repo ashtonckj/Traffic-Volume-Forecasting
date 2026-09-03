@@ -1,32 +1,18 @@
-# =============================================================================
-# tuning_lstm.R — SELF-CONTAINED hyperparameter tuning for the traffic-volume
-#                 LSTM. No source() of any other file.
-#
-#   Data     : data/processed/traffic_volume_processed.csv
-#   Protocol : 85% tuning pool / 15% locked test (test is NEVER touched here)
-#   CV       : expanding-window (anchored) rolling origin, 4 folds, purged gap
-#   Ranking  : mean MASE across all 4 folds
-#   Output   : output/models/lstm/tuning_results.csv  (appended after EVERY config)
-#
-#   Restartable: a config already in the CSV is skipped. Ctrl-C is safe.
-# =============================================================================
-
 suppressPackageStartupMessages(library(keras3))
 
-# =============================================================================
-# 1. SETTINGS
-# =============================================================================
+# 1. CONFIGURATION
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 OUT_PATH <- "output/models/lstm/tuning_results.csv"
 dir.create(dirname(OUT_PATH), recursive = TRUE, showWarnings = FALSE)
 
 TEST_FRAC <- 0.15     # protocol — never tuned
-N_FOLDS <- 4L         # protocol — never tuned
-ASSESS <- 2190L       # protocol — 3-month validation window
-SEASON_M <- 168L      # weekly seasonality: naive baseline + MASE denominator
-PRIMARY <- "MASE"     # metric used to rank configurations
+N_FOLDS   <- 4L       # protocol — never tuned
+ASSESS    <- 2190L    # protocol — 3-month validation window
+SEASON_M  <- 168L     # weekly lag: differencing, seasonal-naive benchmark, MASE scale
+D_ORDER   <- 1L       # seasonal differencing order, matched across all four models
+PRIMARY   <- "MASE"   # metric used to rank configurations
 
-MAX_CONFIGS <- Inf    # set to e.g. 2 for a timing smoke test, then back to Inf
+MAX_CONFIGS <- Inf
 
 # --- THE SEARCH SPACE -------------------------------------------------------
 GRID <- list(
@@ -36,26 +22,22 @@ GRID <- list(
   dropout       = c(0.0, 0.1),
   learning_rate = c(3e-4, 1e-3, 3e-3),
   batch_size    = c(64L),
-  loss          = c("mse"),
-  target_log    = c(FALSE)
+  loss          = c("mse")
 )
 TUNABLE <- names(GRID)
 
-# --- FIXED for every configuration ------------------------------------------
 FIXED <- list(
   horizon       = 1L,
   clipnorm      = 1.0,
   beta_2        = 0.999,
-  epochs        = 150L,   # raised from 100: raw calendar inputs may need longer
+  epochs        = 150L,
   patience_stop = 10L,
   patience_lr   = 4L,
   lr_factor     = 0.5,
   seed          = 42L
 )
 
-# =============================================================================
-# 2. DATA — loaded once, verified rather than assumed
-# =============================================================================
+# 2. DATA
 cat("Loading data ...\n")
 df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
 df$date_time <- as.POSIXct(df$date_time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
@@ -66,44 +48,48 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-DAY_LEVELS <- c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-day_num <- match(df$day_of_week, DAY_LEVELS)          # Monday = 1 ... Sunday = 7
-stopifnot("unrecognised day_of_week" = !anyNA(day_num))
+# Seasonal differencing, D = 1 at lag 168, applied before anything reaches the
+# model — the same diff() call the SARIMAX model uses, so all models receive an
+# identically transformed target. The first 168 rows have no lag reference and
+# are dropped. PREV keeps the lag anchor y_(t-168), which diff() discards but
+# to_level() needs to turn a predicted change back into a volume.
+y_full <- df$traffic_volume
+TARGET <- diff(y_full, lag = SEASON_M, differences = D_ORDER)
+df     <- df[-(1:(SEASON_M * D_ORDER)), , drop = FALSE]
+rownames(df) <- NULL
+LEVEL  <- df$traffic_volume
+PREV   <- head(y_full, -(SEASON_M * D_ORDER))
 
+# Six features, identical to lstm.R. The traffic channel carries the differenced
+# series; the exogenous columns are left in levels.
 FEAT <- cbind(
-  traffic    = df$traffic_volume,
+  traffic    = TARGET,
   temp       = df$temp,
   rain       = df$rain_1h,
   snow       = df$snow_1h,
   clouds     = df$clouds_all,
-  is_holiday = df$is_holiday,
-  hour       = df$hour,
-  month      = df$month,
-  day_num    = day_num
+  is_holiday = df$is_holiday
 )
 
-TARGET     <- df$traffic_volume
 N          <- nrow(df)
 N_FEAT     <- ncol(FEAT)
-TEST_START <- floor((1 - TEST_FRAC) * N) + 1L
+TEST_START <- min(which(df$split == "test"))
 POOL_END   <- TEST_START - 1L
 
-cat(sprintf("rows = %d | %s -> %s | features = %d (%s)\n",
-            N, format(min(df$date_time)), format(max(df$date_time)), N_FEAT,
-            paste(colnames(FEAT), collapse = ", ")))
+cat(sprintf("rows = %d (%d dropped by differencing) | %s -> %s | features = %d (%s)\n",
+            N, SEASON_M * D_ORDER, format(min(df$date_time)), format(max(df$date_time)),
+            N_FEAT, paste(colnames(FEAT), collapse = ", ")))
+cat(sprintf("differencing: D = %d at lag %d | mean %.2f | sd %.2f veh/h\n",
+            D_ORDER, SEASON_M, mean(TARGET), stats::sd(TARGET)))
 cat(sprintf("tuning pool = 1..%d | TEST = %d..%d (locked, not used in this script)\n\n",
             POOL_END, TEST_START, N))
 
-# =============================================================================
 # 3. FOLDS
-#
-# gap = lookback + horizon - 1. Without it the first validation input window
-# overlaps rows the model trained on, and val loss is partly train loss.
-#
-# NOTE: va_end always equals POOL_END regardless of gap, so the validation
-# windows are IDENTICAL for every configuration. Only the training end shifts.
-# Comparisons across the grid stay fair even when look-back varies.
-# =============================================================================
+#    gap = lookback + horizon - 1. Without it the first validation input window
+#    overlaps rows the model trained on, and val loss is partly train loss.
+#    va_end always equals POOL_END regardless of gap, so the validation windows
+#    are IDENTICAL for every configuration and only the training end shifts —
+#    comparisons stay fair even when look-back varies.
 make_folds <- function(cfg) {
   gap     <- cfg$lookback + cfg$horizon - 1L
   initial <- POOL_END - N_FOLDS * ASSESS - gap
@@ -121,9 +107,7 @@ make_folds <- function(cfg) {
   f
 }
 
-# =============================================================================
-# 4. WINDOWING AND SCALING
-# =============================================================================
+# 4. HELPERS
 make_windows <- function(rows, cfg) {
   m  <- FEAT[rows, , drop = FALSE]
   ns <- length(rows) - cfg$lookback - cfg$horizon + 1L
@@ -135,30 +119,28 @@ make_windows <- function(rows, cfg) {
        idx = rows[(cfg$lookback + cfg$horizon):length(rows)])
 }
 
-# z-score from TRAIN rows only — never the whole series.
+# Undo the differencing: y_t = y_(t-168) + predicted change.
+to_level <- function(pred, idx) pmax(0, PREV[idx] + pred)
+
+# Standardisation fitted on TRAINING rows only — never the whole series.
 make_scaler <- function(train_rows, cfg) {
   mu <- colMeans(FEAT[train_rows, , drop = FALSE])
   sd <- apply(FEAT[train_rows, , drop = FALSE], 2, stats::sd)
   sd[sd == 0] <- 1
-  yt <- if (cfg$target_log) log1p(TARGET[train_rows]) else TARGET[train_rows]
-  mu_y <- mean(yt)
-  sd_y <- stats::sd(yt)
+  mu_y <- mean(TARGET[train_rows])
+  sd_y <- stats::sd(TARGET[train_rows])
   list(
     x_apply = function(a) {
       for (j in seq_len(N_FEAT)) a[, , j] <- (a[, , j] - mu[j]) / sd[j]
       a
     },
-    y_apply = function(v) ((if (cfg$target_log) log1p(v) else v) - mu_y) / sd_y,
-    y_inv   = function(v) {
-      z <- v * sd_y + mu_y
-      pmax(0, if (cfg$target_log) expm1(z) else z)
-    }
+    y_apply = function(v) (v - mu_y) / sd_y,
+    # a differenced value is legitimately negative, so it is not clipped here;
+    # clipping happens once, in to_level(), after the level is reconstructed
+    y_inv   = function(v) v * sd_y + mu_y
   )
 }
 
-# =============================================================================
-# 5. MODEL
-# =============================================================================
 build_model <- function(cfg) {
   m <- keras_model_sequential(input_shape = c(cfg$lookback, N_FEAT))
   if (cfg$n_layers >= 2L)
@@ -172,15 +154,12 @@ build_model <- function(cfg) {
             loss = cfg$loss, metrics = "mae")
 }
 
-# =============================================================================
-# 6. METRICS — all on the ORIGINAL traffic_volume scale
-#
-# MASE denominator = in-sample seasonal-naive MAE on the TRAINING rows
-# (Hyndman & Koehler 2006). It must not come from the evaluation set.
-#   MASE < 1 -> better than "same hour last week";  = 1 -> equal;  > 1 -> worse.
-# =============================================================================
+# 5. METRICS — all on the ORIGINAL traffic_volume scale, after integration.
+#    MASE denominator = in-sample seasonal-naive MAE on the TRAINING rows
+#    (Hyndman & Koehler 2006). It must not come from the evaluation set.
+#    MASE < 1 -> better than "same hour last week"; = 1 -> equal; > 1 -> worse.
 mase_scale <- function(train_rows, m = SEASON_M) {
-  y <- TARGET[train_rows]
+  y <- LEVEL[train_rows]
   mean(abs(y[(m + 1):length(y)] - y[1:(length(y) - m)]))
 }
 
@@ -195,9 +174,7 @@ metrics <- function(actual, pred, scale) {
     zeros = sum(!nz))
 }
 
-# =============================================================================
-# 7. ONE FOLD — fresh weights every call, so nothing leaks between folds
-# =============================================================================
+# 6. ONE FOLD — fresh weights every call, so nothing leaks between folds
 run_fold <- function(cfg, train_rows, eval_rows) {
   set_random_seed(cfg$seed)
   sc <- make_scaler(train_rows, cfg)
@@ -220,8 +197,10 @@ run_fold <- function(cfg, train_rows, eval_rows) {
     )
   )
 
-  pred <- sc$y_inv(as.numeric(predict(model, xev, verbose = 0)))
-  out  <- list(metrics    = metrics(ev$y, pred, mase_scale(train_rows)),
+  # The network predicts a change; integrate before scoring so the leaderboard
+  # is in vehicles/h and comparable to the other three models.
+  pred <- to_level(sc$y_inv(as.numeric(predict(model, xev, verbose = 0))), ev$idx)
+  out  <- list(metrics    = metrics(LEVEL[ev$idx], pred, mase_scale(train_rows)),
                best_epoch = which.min(h$metrics$val_loss),
                n_epochs   = length(h$metrics$val_loss))
   rm(xtr, xev, tr, ev, model)
@@ -229,11 +208,12 @@ run_fold <- function(cfg, train_rows, eval_rows) {
   out
 }
 
-# =============================================================================
-# 8. GRID, RESUME, CSV
-# =============================================================================
+# 7. GRID, RESUME, CSV
+#    The key carries the differencing order, so a run under a different
+#    differencing scheme can never be mistaken for one already completed.
 cfg_key <- function(cfg) {
-  paste(vapply(TUNABLE, function(k) as.character(cfg[[k]]), ""), collapse = "|")
+  paste(c(paste0("D", D_ORDER, "L", SEASON_M),
+          vapply(TUNABLE, function(k) as.character(cfg[[k]]), "")), collapse = "|")
 }
 
 as_cfg <- function(row) {
@@ -244,7 +224,6 @@ as_cfg <- function(row) {
   cfg$n_layers   <- as.integer(cfg$n_layers)
   cfg$batch_size <- as.integer(cfg$batch_size)
   cfg$loss       <- as.character(cfg$loss)
-  cfg$target_log <- as.logical(cfg$target_log)
   cfg
 }
 
@@ -264,9 +243,7 @@ cat(sprintf("== %d configurations x %d folds = %d model fits ==\n",
 if (length(done)) cat(sprintf("   %d already in %s, will be skipped\n", length(done), OUT_PATH))
 cat("\n")
 
-# =============================================================================
-# 9. RUN
-# =============================================================================
+# 8. RUN
 times <- numeric(0)
 
 for (i in seq_len(nrow(TODO))) {
@@ -274,10 +251,10 @@ for (i in seq_len(nrow(TODO))) {
   key <- cfg_key(cfg)
 
   if (key %in% done) {
-    cat(sprintf("[%2d/%2d] %-34s skip (already done)\n", i, nrow(TODO), key))
+    cat(sprintf("[%2d/%2d] %-40s skip (already done)\n", i, nrow(TODO), key))
     next
   }
-  cat(sprintf("[%2d/%2d] %-34s ", i, nrow(TODO), key))
+  cat(sprintf("[%2d/%2d] %-40s ", i, nrow(TODO), key))
   flush.console()
 
   t0 <- Sys.time()
@@ -294,7 +271,8 @@ for (i in seq_len(nrow(TODO))) {
   times <- c(times, secs)
   M <- do.call(rbind, lapply(res, function(r) r$metrics))
 
-  row <- data.frame(key = key, timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"), stringsAsFactors = FALSE)
+  row <- data.frame(key = key, timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+                    D_order = D_ORDER, diff_lag = SEASON_M, stringsAsFactors = FALSE)
   for (k in TUNABLE) row[[k]] <- cfg[[k]]
   for (m in c("MAE", "RMSE", "MAPE", "sMAPE", "MASE")) {
     row[[paste0("mean_", m)]] <- round(mean(M[, m], na.rm = TRUE), 4)
@@ -322,10 +300,9 @@ for (i in seq_len(nrow(TODO))) {
               row$mean_MASE, row$sd_MASE, row$mean_MAE, row$mean_RMSE, row$best_epochs, secs, eta_min))
 }
 
-# =============================================================================
-# 10. LEADERBOARD
-# =============================================================================
+# 9. LEADERBOARD
 r <- read.csv(OUT_PATH, stringsAsFactors = FALSE)
+if ("D_order" %in% names(r)) r <- r[r$D_order == D_ORDER & r$diff_lag == SEASON_M, , drop = FALSE]
 r <- r[order(r[[paste0("mean_", PRIMARY)]]), ]
 
 cat(sprintf("\n== Leaderboard: all %d configs, ranked by mean %s ==\n", nrow(r), PRIMARY))
@@ -346,7 +323,7 @@ se <- mean(r$sd_MASE, na.rm = TRUE) / sqrt(N_FOLDS)
 tied <- sum(r$mean_MASE <= best$mean_MASE + se)
 cat(sprintf("\nStandard error of a config mean: %.4f\n", se))
 cat(sprintf("%d configuration(s) lie within one SE of the best — treat them as tied\n", tied))
-cat(sprintf("and pick the smallest/cheapest among them.\n"))
+cat("and pick the smallest/cheapest among them.\n")
 
 cat(sprintf("\nFull results: %s\n", OUT_PATH))
 cat("Next: fix the parameters that clearly won, open the next ones in GRID,\n")

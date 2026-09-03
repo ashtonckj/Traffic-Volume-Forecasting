@@ -9,11 +9,11 @@ dir.create(FIG, recursive = TRUE, showWarnings = FALSE)
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
 
 cfg <- list(
-  lookback      = 48L,
-  units         = 64L,
-  n_layers      = 1L,
+  lookback      = 168L,
+  units         = 128L,
+  n_layers      = 2L,
   dropout       = 0.0,
-  learning_rate = 0.001,
+  learning_rate = 0.003,
   batch_size    = 64L,
   loss          = "mse",
   target_log    = FALSE,
@@ -23,9 +23,10 @@ cfg <- list(
   seed          = 42L
 )
 
-EPOCHS    <- 49L      # mean of the CV best_epochs for the winning config
+EPOCHS    <- 10L      # mean of the CV best_epochs for the winning config
 TEST_FRAC <- 0.15
-SEASON_M  <- 168L     # weekly lag: seasonal-naive benchmark and MASE scale
+SEASON_M  <- 168L     # weekly lag: differencing, seasonal-naive benchmark, MASE scale
+D_ORDER   <- 1L       # seasonal differencing order, matched across all four models
 
 # Forward forecast horizon: one week immediately after the last observation.
 FORECAST_HOURS <- 168L
@@ -40,9 +41,22 @@ stopifnot(
   "duplicate timestamps"        = !any(duplicated(df$date_time))
 )
 
-# Six features, taken directly from the dataset columns.
+# Seasonal differencing, D = 1 at lag 168, applied before anything reaches the
+# model — the same diff() call the SARIMAX model uses, so all models receive an
+# identically transformed target. The first 168 rows have no lag reference and
+# are dropped. PREV keeps the lag anchor y_(t-168), which diff() discards but
+# to_level() needs to turn a predicted change back into a volume.
+y_full <- df$traffic_volume
+TARGET <- diff(y_full, lag = SEASON_M, differences = D_ORDER)
+df     <- df[-(1:(SEASON_M * D_ORDER)), , drop = FALSE]
+rownames(df) <- NULL
+LEVEL  <- df$traffic_volume
+PREV   <- head(y_full, -(SEASON_M * D_ORDER))
+
+# Six features. The traffic channel carries the differenced series; the
+# exogenous columns are left in levels.
 FEATURE <- cbind(
-  traffic    = df$traffic_volume,
+  traffic    = TARGET,
   temp       = df$temp,
   rain       = df$rain_1h,
   snow       = df$snow_1h,
@@ -50,16 +64,17 @@ FEATURE <- cbind(
   is_holiday = df$is_holiday
 )
 
-TARGET <- df$traffic_volume
 N_ROWS <- nrow(df)
 N_FEATURE <- ncol(FEATURE)
 # Take the test boundary from the shared split column so the LSTM is scored on
 # exactly the rows the other models use.
-TEST_START <- if ("split" %in% names(df)) min(which(df$split == "test")) else floor((1 - TEST_FRAC) * N_ROWS) + 1L
+TEST_START <- min(which(df$split == "test"))
 POOL_END <- TEST_START - 1L
 
-cat(sprintf("rows = %d | features = %d (%s)\n", N_ROWS, N_FEATURE,
-            paste(colnames(FEATURE), collapse = ", ")))
+cat(sprintf("rows = %d (%d dropped by differencing) | features = %d (%s)\n",
+            N_ROWS, SEASON_M * D_ORDER, N_FEATURE, paste(colnames(FEATURE), collapse = ", ")))
+cat(sprintf("differencing: D = %d at lag %d | mean %.2f | sd %.2f veh/h\n",
+            D_ORDER, SEASON_M, mean(TARGET), stats::sd(TARGET)))
 cat(sprintf("TRAIN pool = 1..%d      (%s .. %s)\n", POOL_END,
             format(df$date_time[1], "%Y-%m-%d"), format(df$date_time[POOL_END], "%Y-%m-%d")))
 cat(sprintf("TEST       = %d..%d (%s .. %s, %.1f%%)\n\n", TEST_START, N_ROWS,
@@ -79,30 +94,32 @@ make_windows <- function(rows) {
        idx = rows[(cfg$lookback + cfg$horizon):length(rows)])
 }
 
+# Undo the differencing: y_t = y_(t-168) + predicted change.
+to_level <- function(pred, idx) pmax(0, PREV[idx] + pred)
+
 # Standardisation fitted on TRAINING rows only.
 make_scaler <- function(train_rows) {
   mu <- colMeans(FEATURE[train_rows, , drop = FALSE])
   sd <- apply(FEATURE[train_rows, , drop = FALSE], 2, stats::sd)
   sd[sd == 0] <- 1
-  yt <- if (cfg$target_log) log1p(TARGET[train_rows]) else TARGET[train_rows]
-  mu_y <- mean(yt)
-  sd_y <- stats::sd(yt)
+  mu_y <- mean(TARGET[train_rows])
+  sd_y <- stats::sd(TARGET[train_rows])
   list(
     mu = mu, sd = sd,
     x_apply = function(a) {
       for (j in seq_len(N_FEATURE)) a[, , j] <- (a[, , j] - mu[j]) / sd[j]
       a
     },
-    y_apply = function(v) ((if (cfg$target_log) log1p(v) else v) - mu_y) / sd_y,
-    y_inv = function(v) {
-      z <- v * sd_y + mu_y
-      pmax(0, if (cfg$target_log) expm1(z) else z)
-    }
+    y_apply = function(v) (v - mu_y) / sd_y,
+    # a differenced value is legitimately negative, so it is not clipped here;
+    # clipping happens once, in to_level(), after the level is reconstructed
+    y_inv = function(v) v * sd_y + mu_y
   )
 }
 
+# MASE denominator: in-sample seasonal-naive MAE on TRAINING rows, original scale.
 mase_scale <- function(train_rows, m = SEASON_M) {
-  y <- TARGET[train_rows]
+  y <- LEVEL[train_rows]
   mean(abs(y[(m + 1):length(y)] - y[1:(length(y) - m)]))
 }
 
@@ -145,17 +162,21 @@ model %>% fit(
 )
 
 # 5. TEST EVALUATION — the test set is touched exactly once, only to predict
+#    The model outputs a change; it is integrated back to a volume before any
+#    metric is computed, so every figure below is in vehicles/h and stays
+#    comparable to the other three models.
 te <- make_windows(TEST_START:N_ROWS)
-pred <- sc$y_inv(as.numeric(predict(model, sc$x_apply(te$x), verbose = 0)))
-naive <- TARGET[te$idx - SEASON_M]
+pred <- to_level(sc$y_inv(as.numeric(predict(model, sc$x_apply(te$x), verbose = 0))), te$idx)
+actual <- LEVEL[te$idx]
+naive <- PREV[te$idx]      # seasonal naive = same hour last week = zero change
 scale <- mase_scale(train_rows)
 
-out <- rbind(LSTM = metrics(te$y, pred, scale), `seasonal-naive` = metrics(te$y, naive, scale))
+out <- rbind(LSTM = metrics(actual, pred, scale), `seasonal-naive` = metrics(actual, naive, scale))
 
 cat("\n===================== FINAL TEST RESULTS =====================\n")
 cat(sprintf("period: %s .. %s   (%d hours)\n",
             format(df$date_time[min(te$idx)], "%Y-%m-%d"),
-            format(df$date_time[max(te$idx)], "%Y-%m-%d"), length(te$y)))
+            format(df$date_time[max(te$idx)], "%Y-%m-%d"), length(actual)))
 print(round(out, 4))
 cat(sprintf("\nimprovement over seasonal-naive: MAE %.1f%%  RMSE %.1f%%\n",
             100 * (1 - out["LSTM", "MAE"] / out["seasonal-naive", "MAE"]),
@@ -167,10 +188,12 @@ cat("==============================================================\n")
 res <- data.frame(model = rownames(out), out, row.names = NULL)
 for (k in names(cfg)) res[[k]] <- cfg[[k]]
 res$epochs <- EPOCHS
+res$D_order <- D_ORDER
+res$diff_lag <- SEASON_M
 write.csv(res, file.path(OUT, "final_test_metrics.csv"), row.names = FALSE)
 
 test_df <- data.frame(date_time = df$date_time[te$idx],
-                      actual = te$y,
+                      actual = actual,
                       predicted = round(pred, 2),
                       naive = naive)
 write.csv(transform(test_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S")),
@@ -187,8 +210,11 @@ write.csv(transform(test_df, date_time = format(date_time, "%Y-%m-%d %H:%M:%S"))
 #     This makes the output a forecast under average seasonal weather, which is
 #     an assumption, not a weather prediction.
 #
-# The forecast is recursive: each predicted hour is appended to the input
-# window and used to predict the next, so error compounds with horizon.
+# The forecast is recursive: each predicted change is appended to the input
+# window and used to predict the next, so error compounds with horizon. The
+# integration anchor is different, though: y_(t-168) for the first 168 steps is
+# an OBSERVED volume, so within a one-week horizon the level never has to be
+# built from earlier predictions and no drift accumulates in the anchor.
 FORECAST_START <- max(df$date_time) + 3600
 future_dates <- seq(FORECAST_START, by = "hour", length.out = FORECAST_HOURS)
 H <- length(future_dates)
@@ -252,7 +278,13 @@ for (i in seq_len(H)) {
 }
 close(pb)
 
-forecast_values <- sc$y_inv(preds_scaled)
+# Integrate: each predicted change is added to the volume 168 hours earlier.
+# lev grows as the horizon passes 168 h, at which point the anchor itself
+# becomes a prediction; within one week that never happens.
+deltas <- sc$y_inv(preds_scaled)
+lev <- c(LEVEL, numeric(H))
+for (i in seq_len(H)) lev[N_ROWS + i] <- max(0, lev[N_ROWS + i - SEASON_M] + deltas[i])
+forecast_values <- lev[(N_ROWS + 1L):(N_ROWS + H)]
 
 forecast_df <- data.frame(
   date_time  = future_dates,
@@ -270,6 +302,8 @@ cat(sprintf("mean %.0f | min %.0f | max %.0f vehicles/h\n",
 cat(sprintf("peak at %s (%.0f veh/h)\n",
             format(future_dates[which.max(forecast_values)], "%a %d %b %H:%M"),
             max(forecast_values)))
+cat(sprintf("mean predicted week-on-week change %+.1f veh/h (range %+.0f .. %+.0f)\n",
+            mean(deltas), min(deltas), max(deltas)))
 dtype <- ifelse(forecast_df$is_holiday == 1, "Holiday",
                 ifelse(future_day >= 6L, "Weekend", "Weekday"))
 print(data.frame(type  = names(tapply(forecast_df$forecast, dtype, mean)),
@@ -371,6 +405,7 @@ ggsave(file.path(FIG, "fig4_future_forecast.png"),
 mh <- tapply(test_df$err_lstm, test_df$hr, mean)
 nh <- tapply(test_df$err_naive, test_df$hr, mean)
 cat("\n=============== FIGURE FACTS ===============\n")
+cat(sprintf("Differencing: D = %d at lag %d\n", D_ORDER, SEASON_M))
 cat(sprintf("Fig 1 week shown : %s .. %s\n",
             format(min(wk$date_time), "%d %b %Y"), format(max(wk$date_time), "%d %b %Y")))
 cat(sprintf("  actual peak %.0f | actual min %.0f | MAE in this week %.1f\n",
