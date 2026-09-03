@@ -43,11 +43,7 @@ set.seed(2094)
 # 2. LOAD PROCESSED DATA
 # ================================================================
 
-data_path <- paste0(
-  "C:/Users/ongyi/OneDrive/Documents/",
-  "BMMS2094_Traffic_Forecasting/data/",
-  "traffic_volume_processed.csv"
-)
+data_path <- "data/processed/traffic_volume_processed1.csv"
 
 
 traffic <- read.csv(

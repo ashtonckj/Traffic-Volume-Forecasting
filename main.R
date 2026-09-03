@@ -10,7 +10,7 @@ SCRIPTS <- c(
   "src/models/lstm.R",
   "src/models/sarima.R",
   "src/models/seasonal_naive.R",
-  "src/models/xg_boost.R",
+  "src/models/xg_boost.R"
 )
 
 for (s in SCRIPTS) {
