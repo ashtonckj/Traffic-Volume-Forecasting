@@ -3,7 +3,7 @@
 # Rscript seasonal_naive_analysis.R "C:/path/to/traffic_volume_processed.csv"
 
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
-output_dir <- file.path(getwd(), "output", "seasonal_naive_r_70_15_15")
+output_dir <- file.path(getwd(), "output/models", "seasonal_naive")
 
 seasonal_period_weekly <- 168  # same hour in the previous week
 seasonal_period_daily <- 24    # same hour on the previous day
