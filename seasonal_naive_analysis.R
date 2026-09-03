@@ -2,31 +2,60 @@
 # Run in RStudio with Source, or from the terminal:
 # Rscript seasonal_naive_analysis.R "C:/path/to/traffic_volume_processed.csv"
 
-CSV_PATH <- "data/processed/traffic_volume_processed.csv"
+default_data <- "C:/Users/newcr/Downloads/traffic_volume_processed (1).csv"
+args <- commandArgs(trailingOnly = TRUE)
+data_path <- if (length(args) >= 1) args[1] else default_data
 output_dir <- file.path(getwd(), "output", "seasonal_naive_r_70_15_15")
 
 seasonal_period_weekly <- 168  # same hour in the previous week
-seasonal_period_daily <- 24    # same hour on the previous day
+diff_order <- 1                # group-wide first seasonal difference
+diff_lag <- 168                # group-wide weekly differencing lag
 acf_max_lag <- 24 * 14         # two weeks
 
+if (!file.exists(data_path)) {
+  stop("Processed dataset not found: ", data_path)
+}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
 # ---- 1. Read the shared processed data ----
-df <- read.csv(CSV_PATH, stringsAsFactors = FALSE)
-df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
-df <- df[order(df$date_time), ]
+data <- read.csv(data_path, stringsAsFactors = FALSE)
+if (!all(c("date_time", "traffic_volume") %in% names(data))) {
+  stop("The dataset must contain date_time and traffic_volume columns.")
+}
+data$date_time <- as.POSIXct(data$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+data <- data[order(data$date_time), ]
 
 # The shared processed data should already have one record per timestamp.
-stopifnot(
-  "NA values present"           = !anyNA(df),
-  "grid is not strictly hourly" = all(as.numeric(diff(df$date_time), units = "hours") == 1),
-  "duplicate timestamps"        = !any(duplicated(df$date_time))
-)
+if (anyDuplicated(data$date_time)) {
+  stop("Duplicate timestamps found. Use the group's processed dataset.")
+}
+if (anyNA(data$traffic_volume)) {
+  stop("Missing traffic_volume values found. Use the group's processed dataset.")
+}
 # ---- 1b. Shared chronological 70% / 15% / 15% split ----
 # The supplied group dataset already contains the agreed split labels.
 # Using them ensures that Seasonal Naive is evaluated on exactly the same
 # training, validation, and test observations as the other group models.
-train <- df[df$split == "train", ]
-validation <- df[df$split == "validation", ]
-test <- df[df$split == "test", ]
+if ("split" %in% names(data)) {
+  data$split <- tolower(trimws(as.character(data$split)))
+  required_splits <- c("train", "validation", "test")
+  if (!all(required_splits %in% unique(data$split))) {
+    stop("The split column must contain train, validation, and test labels.")
+  }
+  train <- data[data$split == "train", ]
+  validation <- data[data$split == "validation", ]
+  test <- data[data$split == "test", ]
+} else {
+  # Fallback if the group provides an otherwise identical file without labels.
+  # Training receives floor(70%) of rows, validation floor(15%), and the
+  # remaining newest rows form the test set.
+  n_total <- nrow(data)
+  n_train <- floor(0.70 * n_total)
+  n_validation <- floor(0.15 * n_total)
+  train <- data[seq_len(n_train), ]
+  validation <- data[(n_train + 1):(n_train + n_validation), ]
+  test <- data[(n_train + n_validation + 1):n_total, ]
+}
 if (nrow(train) <= seasonal_period_weekly) {
   stop("Not enough training data for the weekly Seasonal Naive model.")
 }
@@ -35,20 +64,47 @@ if (!all(as.numeric(diff(train$date_time), units = "hours") == 1) ||
     !all(as.numeric(diff(test$date_time), units = "hours") == 1)) {
   stop("Validation and test periods must contain consecutive hourly timestamps.")
 }
-
-# ---- 2. Forecast functions ----
-seasonal_naive_forecast <- function(train_values, horizon, seasonal_period) {
-  history <- as.numeric(train_values)
-  forecast <- numeric(horizon)
-  for (i in seq_len(horizon)) {
-    forecast[i] <- history[length(history) - seasonal_period + 1]
-    history <- c(history, forecast[i])
-  }
-  forecast
+if (as.numeric(difftime(min(validation$date_time), max(train$date_time), units = "hours")) != 1 ||
+    as.numeric(difftime(min(test$date_time), max(validation$date_time), units = "hours")) != 1) {
+  stop("Training, validation, and test splits must be consecutive with no boundary gaps.")
 }
 
+# ---- 2. Forecast functions ----
 naive_forecast <- function(train_values, horizon) {
   rep(tail(as.numeric(train_values), 1), horizon)
+}
+
+# Apply the group-wide D = 1 seasonal difference: z_t = y_t - y_(t-168).
+seasonally_difference <- function(values, lag = diff_lag) {
+  values <- as.numeric(values)
+  if (length(values) <= lag) {
+    stop("Not enough observations for the required seasonal difference.")
+  }
+  diff(values, lag = lag, differences = diff_order)
+}
+
+# Convert predicted differences back to traffic volume. The first 168 anchors
+# come from observed history; later anchors are the model's earlier forecasts.
+# No validation or test traffic values are used as forecast inputs.
+reconstruct_traffic_volume <- function(diff_forecast, raw_history, lag = diff_lag) {
+  history <- as.numeric(raw_history)
+  raw_forecast <- numeric(length(diff_forecast))
+  for (i in seq_along(diff_forecast)) {
+    weekly_anchor <- history[length(history) - lag + 1]
+    raw_forecast[i] <- diff_forecast[i] + weekly_anchor
+    history <- c(history, raw_forecast[i])
+  }
+  raw_forecast
+}
+
+# For a D = 1 seasonal difference, Seasonal Naive assumes that the future
+# change from the same hour last week is zero: z_hat_t = 0. Reintegrating this
+# produces y_hat_t = y_hat_(t-168), the standard Weekly Seasonal Naive rule.
+seasonal_naive_difference_forecast <- function(diff_history, horizon) {
+  if (length(diff_history) == 0) {
+    stop("Differenced training history is required for Seasonal Naive forecasting.")
+  }
+  rep(0, horizon)
 }
 
 # MASE uses one common weekly seasonal-naive scale for every model.
@@ -86,12 +142,12 @@ forecast_accuracy <- function(actual, forecast, mase_scale) {
 # exactly the same denominator when reporting MASE.
 mase_scale_weekly <- seasonal_mase_scale(train$traffic_volume, seasonal_period_weekly)
 
-# ---- 3. Validation: choose the seasonal period without using test data ----
-weekly_validation_fc <- seasonal_naive_forecast(train$traffic_volume, nrow(validation), seasonal_period_weekly)
-daily_validation_fc <- seasonal_naive_forecast(train$traffic_volume, nrow(validation), seasonal_period_daily)
+# ---- 3. Difference training data, then validate without using test data ----
+diff_train <- seasonally_difference(train$traffic_volume)
+weekly_validation_diff_fc <- seasonal_naive_difference_forecast(diff_train, nrow(validation))
+weekly_validation_fc <- reconstruct_traffic_volume(weekly_validation_diff_fc, train$traffic_volume)
 validation_accuracy <- rbind(
-  "Weekly Seasonal Naive (m=168)" = forecast_accuracy(validation$traffic_volume, weekly_validation_fc, mase_scale_weekly),
-  "Daily Seasonal Naive (m=24)" = forecast_accuracy(validation$traffic_volume, daily_validation_fc, mase_scale_weekly)
+  "Weekly Seasonal Naive (D=1, lag=168)" = forecast_accuracy(validation$traffic_volume, weekly_validation_fc, mase_scale_weekly)
 )
 validation_accuracy <- as.data.frame(validation_accuracy)
 validation_accuracy$model <- rownames(validation_accuracy)
@@ -100,18 +156,16 @@ validation_accuracy <- validation_accuracy[, c("model", "n_observed", "MAE", "RM
 write.csv(round(validation_accuracy[, -1], 3), file.path(output_dir, "validation_accuracy_metrics_numeric.csv"), row.names = FALSE)
 write.csv(validation_accuracy, file.path(output_dir, "validation_accuracy_metrics.csv"), row.names = FALSE)
 
-selected_period <- if (validation_accuracy$MAPE_percent[validation_accuracy$model == "Weekly Seasonal Naive (m=168)"] <
-                       validation_accuracy$MAPE_percent[validation_accuracy$model == "Daily Seasonal Naive (m=24)"])
-  seasonal_period_weekly else seasonal_period_daily
+selected_period <- seasonal_period_weekly
 
-# ---- 4. Test: refit using training + validation, then evaluate once ----
+# ---- 4. Refit on train + validation, then test once ----
 train_validation <- rbind(train, validation)
-weekly_fc <- seasonal_naive_forecast(train_validation$traffic_volume, nrow(test), seasonal_period_weekly)
-daily_fc <- seasonal_naive_forecast(train_validation$traffic_volume, nrow(test), seasonal_period_daily)
+diff_train_validation <- seasonally_difference(train_validation$traffic_volume)
+weekly_test_diff_fc <- seasonal_naive_difference_forecast(diff_train_validation, nrow(test))
+weekly_fc <- reconstruct_traffic_volume(weekly_test_diff_fc, train_validation$traffic_volume)
 persistence_fc <- naive_forecast(train_validation$traffic_volume, nrow(test))
 accuracy <- rbind(
-  "Weekly Seasonal Naive (m=168)" = forecast_accuracy(test$traffic_volume, weekly_fc, mase_scale_weekly),
-  "Daily Seasonal Naive (m=24)" = forecast_accuracy(test$traffic_volume, daily_fc, mase_scale_weekly),
+  "Weekly Seasonal Naive (D=1, lag=168)" = forecast_accuracy(test$traffic_volume, weekly_fc, mase_scale_weekly),
   "Naive persistence" = forecast_accuracy(test$traffic_volume, persistence_fc, mase_scale_weekly)
 )
 accuracy <- as.data.frame(accuracy)
@@ -126,13 +180,44 @@ write.csv(accuracy_print, file.path(output_dir, "accuracy_metrics.csv"), row.nam
 forecast_table <- data.frame(
   date_time = test$date_time,
   actual_traffic_volume = test$traffic_volume,
-  weekly_seasonal_naive_forecast_m168 = weekly_fc,
-  daily_seasonal_naive_forecast_m24 = daily_fc,
+  weekly_snaive_difference_forecast_m168 = weekly_test_diff_fc,
+  weekly_snaive_reconstructed_forecast_m168 = weekly_fc,
   naive_persistence_forecast = persistence_fc
 )
 write.csv(forecast_table, file.path(output_dir, "holdout_forecasts.csv"), row.names = FALSE)
 
-# ---- 5. Weekly seasonality profile ----
+# ---- 5. One-week future forecast beyond the available dataset ----
+# This is separate from the test forecast. It uses all known observations after
+# evaluation, so it cannot receive accuracy metrics until future actual values exist.
+future_horizon <- seasonal_period_weekly
+diff_all_data <- seasonally_difference(data$traffic_volume)
+future_diff_fc <- seasonal_naive_difference_forecast(diff_all_data, future_horizon)
+future_fc <- reconstruct_traffic_volume(future_diff_fc, data$traffic_volume)
+future_dates <- seq(from = max(data$date_time) + 60 * 60, by = "hour", length.out = future_horizon)
+future_forecast_table <- data.frame(
+  date_time = future_dates,
+  weekly_snaive_difference_forecast_m168 = future_diff_fc,
+  weekly_snaive_reconstructed_forecast_m168 = future_fc
+)
+write.csv(future_forecast_table, file.path(output_dir, "one_week_future_forecast.csv"), row.names = FALSE)
+
+# Final two observed weeks plus the one-week forecast. The dashed line is the
+# boundary between observed data and the future period.
+recent_data <- tail(data, 2 * seasonal_period_weekly)
+png(file.path(output_dir, "one_week_future_forecast.png"), width = 2200, height = 1050, res = 200)
+plot(recent_data$date_time, recent_data$traffic_volume, type = "l", col = "#17202a", lwd = 1.5,
+     xlim = range(c(recent_data$date_time, future_dates)),
+     ylim = range(c(recent_data$traffic_volume, future_fc)),
+     xlab = "Date", ylab = "Traffic volume",
+     main = "One-Week Future Forecast: Weekly Seasonal Naive (D=1, lag 168)")
+lines(future_dates, future_fc, col = "#2874a6", lwd = 1.8)
+abline(v = max(data$date_time), col = "#d35400", lty = 2, lwd = 2)
+legend("topleft", legend = c("Observed traffic volume", "One-week future forecast", "Forecast start"),
+       col = c("#17202a", "#2874a6", "#d35400"), lty = c(1, 1, 2),
+       lwd = c(1.5, 1.8, 2), bty = "n")
+dev.off()
+
+# ---- 6. Weekly seasonality profile ----
 train$hour_of_day <- as.integer(format(train$date_time, "%H"))
 train$day_of_week <- factor(
   weekdays(train$date_time),
@@ -160,24 +245,19 @@ dev.off()
 png(file.path(output_dir, "seasonal_naive_holdout_forecast.png"), width = 2200, height = 1050, res = 200)
 plot(test$date_time, test$traffic_volume, type = "l", col = "#17202a", lwd = 1.5,
      xlab = "Date", ylab = "Traffic volume",
-     main = "15% Test-Set Forecast: Weekly Seasonal Naive")
+     main = "15% Test Forecast: Weekly Seasonal Naive (D=1, lag 168)")
 lines(test$date_time, weekly_fc, col = "#d35400", lwd = 1.8)
-legend("topleft", legend = c("Observed traffic volume", "Weekly Seasonal Naive (m=168)"),
+legend("topleft", legend = c("Observed traffic volume", "Weekly SNaive (D=1, lag=168)"),
        col = c("#17202a", "#d35400"), lty = 1, lwd = c(1.5, 1.8), bty = "n")
 dev.off()
 
-# ---- 7. Seasonal-period comparison on validation data ----
-comparison <- validation_accuracy[validation_accuracy$model %in% c("Weekly Seasonal Naive (m=168)", "Daily Seasonal Naive (m=24)"), ]
-png(file.path(output_dir, "seasonal_period_comparison.png"), width = 2000, height = 900, res = 200)
-par(mfrow = c(1, 2), mar = c(5, 5, 4, 1))
-for (measure in c("MAE", "RMSE")) {
-  values <- comparison[[measure]]
-  mids <- barplot(values, names.arg = c("Weekly\n(m=168)", "Daily\n(m=24)"),
-                  col = c("#d35400", "#5d6d7e"), ylab = "Vehicles", main = measure,
-                  ylim = c(0, max(values) * 1.2))
-  text(mids, values, labels = sprintf("%.1f", values), pos = 3, cex = 0.9)
-}
-mtext("Seasonal-Period Comparison on the 15% Validation Set", outer = TRUE, line = -1.5, cex = 1.15)
+# ---- 7. Seasonal-difference diagnostic ----
+png(file.path(output_dir, "weekly_seasonal_difference.png"), width = 2200, height = 900, res = 200)
+plot(diff_train, type = "l", col = "#5d6d7e", lwd = 0.8,
+     xlab = "Training observation after lag-168 differencing",
+     ylab = "Traffic-volume change from same hour last week",
+     main = "Weekly Seasonal Difference of Training Traffic Volume (D=1, lag=168)")
+abline(h = 0, col = "#d35400", lty = 2, lwd = 2)
 dev.off()
 
 # ---- 8. Error by hour of day in the test set ----
@@ -191,7 +271,7 @@ write.csv(error_by_hour, file.path(output_dir, "weekly_seasonal_naive_error_by_h
 png(file.path(output_dir, "weekly_seasonal_naive_error_by_hour.png"), width = 2000, height = 900, res = 200)
 barplot(error_by_hour$mean_absolute_error, names.arg = error_by_hour$hour_of_day,
         col = "#d35400", xlab = "Hour of day", ylab = "Mean absolute error (vehicles)",
-        main = "Weekly Seasonal Naive Error by Hour of Day")
+        main = "Weekly Seasonal Naive (D=1): Error by Hour of Day")
 dev.off()
 
 # ---- 9. ACF diagnostic using training data only ----
@@ -215,16 +295,19 @@ text(24, min(acf_24 + 0.10, 0.95), labels = paste0("24 h: ", round(acf_24, 3)), 
 text(168, min(acf_168 + 0.10, 0.95), labels = paste0("168 h: ", round(acf_168, 3)), pos = 4, col = "#d35400")
 dev.off()
 
-# ---- 10. Data summary and console results ----
-timestamp_gaps <- sum(as.numeric(diff(df$date_time), units = "hours") > 1)
+# ---- 11. Data summary and console results ----
+timestamp_gaps <- sum(as.numeric(diff(data$date_time), units = "hours") > 1)
 summary_table <- data.frame(
   metric = c("source_records", "analysis_start", "analysis_end", "training_observations",
              "validation_observations", "test_observations", "validation_start", "test_start",
-             "selected_seasonal_period_hours", "weekly_mase_scale", "remaining_timestamp_gaps_over_1_hour",
+             "difference_order_D", "difference_lag_hours", "selected_snaive_period_hours",
+             "weekly_mase_scale", "future_forecast_horizon_hours", "future_forecast_start",
+             "future_forecast_end", "remaining_timestamp_gaps_over_1_hour",
              "acf_lag_24", "acf_lag_168"),
-  value = c(nrow(df), min(df$date_time), max(df$date_time), nrow(train),
+  value = c(nrow(data), min(data$date_time), max(data$date_time), nrow(train),
             nrow(validation), nrow(test), min(validation$date_time), min(test$date_time),
-            selected_period, round(mase_scale_weekly, 5), timestamp_gaps,
+            diff_order, diff_lag, selected_period, round(mase_scale_weekly, 5), future_horizon,
+            min(future_dates), max(future_dates), timestamp_gaps,
             round(acf_24, 5), round(acf_168, 5))
 )
 write.csv(summary_table, file.path(output_dir, "data_summary.csv"), row.names = FALSE)
@@ -233,8 +316,11 @@ cat("Analysis complete. Files saved to:", normalizePath(output_dir), "\n")
 cat("Training:", min(train$date_time), "to", max(train$date_time), "\n")
 cat("Validation:", min(validation$date_time), "to", max(validation$date_time), "\n")
 cat("Test:", min(test$date_time), "to", max(test$date_time), "\n")
-cat("Selected seasonal period from validation:", selected_period, "hours\n\n")
+cat("Group transformation: D =", diff_order, ", lag =", diff_lag, "hours\n")
+cat("Selected SNaive period from validation:", selected_period, "hours\n\n")
 cat("Test-set accuracy:\n")
 print(accuracy_print)
 cat("\nACF at 24 hours:", round(acf_24, 5), "\n")
 cat("ACF at 168 hours:", round(acf_168, 5), "\n")
+cat("One-week future forecast:", min(future_dates), "to", max(future_dates),
+    "(", future_horizon, "hours)\n")
