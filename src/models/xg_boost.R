@@ -84,7 +84,6 @@ missing_columns <- setdiff(
 
 
 if (length(missing_columns) > 0) {
-  
   stop(
     paste(
       "Missing required columns:",
@@ -127,13 +126,12 @@ if (any(is.na(traffic))) {
 
 if (!all(
   traffic$split %in%
-  c(
-    "train",
-    "validation",
-    "test"
-  )
+    c(
+      "train",
+      "validation",
+      "test"
+    )
 )) {
-  
   stop("Unexpected split labels detected.")
 }
 
@@ -350,13 +348,10 @@ weekday_levels <- c(
 
 
 if (is.numeric(traffic$day_of_week)) {
-  
   traffic$day_of_week_num <- as.numeric(
     traffic$day_of_week
   )
-  
 } else {
-  
   traffic$day_of_week_num <- match(
     traffic$day_of_week,
     weekday_levels
@@ -372,7 +367,6 @@ if (any(is.na(traffic$day_of_week_num))) {
 if (!all(
   traffic$day_of_week_num %in% 1:7
 )) {
-  
   stop("Unexpected numeric weekday coding.")
 }
 
@@ -382,19 +376,14 @@ if (!all(
 # ------------------------------------------------
 
 if (is.logical(traffic$is_holiday)) {
-  
   traffic$is_holiday_num <- as.integer(
     traffic$is_holiday
   )
-  
 } else if (is.numeric(traffic$is_holiday)) {
-  
   traffic$is_holiday_num <- as.numeric(
     traffic$is_holiday
   )
-  
 } else {
-  
   holiday_text <- tolower(
     trimws(
       as.character(
@@ -402,19 +391,16 @@ if (is.logical(traffic$is_holiday)) {
       )
     )
   )
-  
-  
+
+
   traffic$is_holiday_num <- ifelse(
-    
     holiday_text %in% c(
       "1",
       "true",
       "yes",
       "holiday"
     ),
-    
     1,
-    
     0
   )
 }
@@ -504,9 +490,8 @@ mase_scale <- mean(
 
 if (
   !is.finite(mase_scale) ||
-  mase_scale <= 0
+    mase_scale <= 0
 ) {
-  
   stop("Invalid MASE scale.")
 }
 
@@ -564,32 +549,29 @@ cat(
 # ------------------------------------------------
 
 seasonal_difference <- function(
-    y,
-    m = 168L
+  y,
+  m = 168L
 ) {
-  
   w <- rep(
     NA_real_,
     length(y)
   )
-  
-  
+
+
   if (length(y) > m) {
-    
     w[
       (m + 1):length(y)
     ] <-
-      
       y[
         (m + 1):length(y)
       ] -
-      
+
       y[
         1:(length(y) - m)
       ]
   }
-  
-  
+
+
   return(w)
 }
 
@@ -599,89 +581,70 @@ seasonal_difference <- function(
 # ------------------------------------------------
 
 create_xgb_features <- function(
-    w,
-    hour,
-    day_of_week,
-    month,
-    is_holiday
+  w,
+  hour,
+  day_of_week,
+  month,
+  is_holiday
 ) {
-  
-  
   lag_value <- function(
     x,
     lag_n
   ) {
-    
     c(
       rep(
         NA_real_,
         lag_n
       ),
-      
       x[
         1:(length(x) - lag_n)
       ]
     )
   }
-  
-  
+
+
   features <- data.frame(
-    
     target =
       w,
-    
-    
     lag_1 =
       lag_value(
         w,
         1L
       ),
-    
-    
     lag_24 =
       lag_value(
         w,
         24L
       ),
-    
-    
     lag_168 =
       lag_value(
         w,
         168L
       ),
-    
-    
     hour =
       as.numeric(
         hour
       ),
-    
-    
     day_of_week =
       as.numeric(
         day_of_week
       ),
-    
-    
     month =
       as.numeric(
         month
       ),
-    
-    
     is_holiday =
       as.numeric(
         is_holiday
       )
   )
-  
-  
+
+
   features <- features[
     complete.cases(features),
   ]
-  
-  
+
+
   return(features)
 }
 
@@ -691,98 +654,77 @@ create_xgb_features <- function(
 # ------------------------------------------------
 
 recursive_w_forecast <- function(
-    model,
-    w_history,
-    future_data
+  model,
+  w_history,
+  future_data
 ) {
-  
-  
   history <-
     as.numeric(
       w_history
     )
-  
-  
+
+
   horizon <-
     nrow(
       future_data
     )
-  
-  
+
+
   predictions <-
     numeric(
       horizon
     )
-  
-  
+
+
   for (
     i in seq_len(
       horizon
     )
   ) {
-    
-    
     n_hist <-
       length(
         history
       )
-    
-    
+
+
     if (n_hist < 168L) {
-      
       stop(
         "Insufficient differenced history."
       )
     }
-    
-    
+
+
     x_new <- matrix(
-      
       c(
-        
         history[
           n_hist
         ],
-        
-        
         history[
           n_hist - 23L
         ],
-        
-        
         history[
           n_hist - 167L
         ],
-        
-        
         as.numeric(
           future_data$hour[i]
         ),
-        
-        
         as.numeric(
           future_data$day_of_week_num[i]
         ),
-        
-        
         as.numeric(
           future_data$month[i]
         ),
-        
-        
         as.numeric(
           future_data$is_holiday_num[i]
         )
       ),
-      
       nrow = 1
     )
-    
-    
+
+
     colnames(
       x_new
     ) <- c(
-      
       "lag_1",
       "lag_24",
       "lag_168",
@@ -791,36 +733,35 @@ recursive_w_forecast <- function(
       "month",
       "is_holiday"
     )
-    
-    
+
+
     w_hat <-
       as.numeric(
-        
         predict(
           model,
           x_new
         )
       )
-    
-    
+
+
     predictions[i] <-
       w_hat
-    
-    
+
+
     # IMPORTANT:
     #
     # Use the MODEL'S previous prediction for future
     # lag values.
     #
     # Never append actual validation/test W_t.
-    
+
     history <- c(
       history,
       w_hat
     )
   }
-  
-  
+
+
   return(
     predictions
   )
@@ -832,70 +773,66 @@ recursive_w_forecast <- function(
 # ------------------------------------------------
 
 inverse_seasonal_difference <- function(
-    w_forecast,
-    y_history,
-    m = 168L
+  w_forecast,
+  y_history,
+  m = 168L
 ) {
-  
-  
   history <-
     as.numeric(
       y_history
     )
-  
-  
+
+
   horizon <-
     length(
       w_forecast
     )
-  
-  
+
+
   y_forecast <-
     numeric(
       horizon
     )
-  
-  
+
+
   for (
     i in seq_len(
       horizon
     )
   ) {
-    
-    
     n_hist <-
       length(
         history
       )
-    
-    
+
+
     seasonal_reference <-
       history[
         n_hist - m + 1L
       ]
-    
-    
+
+
     y_hat <-
       w_forecast[i] +
       seasonal_reference
-    
-    
+
+
     y_forecast[i] <-
       y_hat
-    
-    
+
+
     # Append prediction.
     #
     # For horizons beyond 168 hours,
     # reconstructed forecasts become the seasonal references.
-    
+
     history <- c(
       history,
       y_hat
     )
   }
-  
-  
+
+
   return(
     y_forecast
   )
@@ -907,25 +844,22 @@ inverse_seasonal_difference <- function(
 # ------------------------------------------------
 
 evaluate_forecast <- function(
-    actual,
-    predicted,
-    mase_scale
+  actual,
+  predicted,
+  mase_scale
 ) {
-  
-  
   valid_pair <-
     !is.na(actual) &
-    !is.na(predicted)
-  
-  
+      !is.na(predicted)
+
+
   if (!any(valid_pair)) {
-    
     stop(
       "No valid actual/predicted pairs."
     )
   }
-  
-  
+
+
   errors <-
     actual[
       valid_pair
@@ -933,63 +867,62 @@ evaluate_forecast <- function(
     predicted[
       valid_pair
     ]
-  
-  
+
+
   rmse <-
     sqrt(
       mean(
         errors^2
       )
     )
-  
-  
+
+
   mae <-
     mean(
       abs(
         errors
       )
     )
-  
-  
+
+
   # -----------------------------
   # MAPE
   #
   # Actual traffic = 0 excluded.
   # -----------------------------
-  
+
   valid_mape <-
     valid_pair &
-    actual != 0
-  
-  
+      actual != 0
+
+
   mape <-
     mean(
       abs(
-        
         (
           actual[
             valid_mape
           ] -
-            
+
             predicted[
               valid_mape
             ]
         ) /
-          
+
           actual[
             valid_mape
           ]
       )
     ) *
-    100
-  
-  
+      100
+
+
   # -----------------------------
   # sMAPE
   #
   # 2|A-F| / (|A| + |F|)
   # -----------------------------
-  
+
   smape_denominator <-
     abs(
       actual
@@ -997,60 +930,51 @@ evaluate_forecast <- function(
     abs(
       predicted
     )
-  
-  
+
+
   valid_smape <-
     valid_pair &
-    smape_denominator != 0
-  
-  
+      smape_denominator != 0
+
+
   smape <-
     mean(
-      
       2 *
-        
+
         abs(
-          
           actual[
             valid_smape
           ] -
-            
+
             predicted[
               valid_smape
             ]
         ) /
-        
+
         smape_denominator[
           valid_smape
         ]
     ) *
-    100
-  
-  
+      100
+
+
   mase <-
     mae /
-    mase_scale
-  
-  
+      mase_scale
+
+
   return(
-    
     data.frame(
-      
       RMSE =
         rmse,
-      
       MAE =
         mae,
-      
       MAPE =
         mape,
-      
       sMAPE =
         smape,
-      
       MASE =
         mase,
-      
       MAPE_zero_actuals_excluded =
         sum(
           valid_pair &
@@ -1085,26 +1009,20 @@ w_train <-
 
 xgb_validation_training_data <-
   create_xgb_features(
-    
     w =
       w_train,
-    
     hour =
       train_data$hour,
-    
     day_of_week =
       train_data$day_of_week_num,
-    
     month =
       train_data$month,
-    
     is_holiday =
       train_data$is_holiday_num
   )
 
 
 validation_x_train <- as.matrix(
-  
   xgb_validation_training_data[
     ,
     c(
@@ -1126,10 +1044,8 @@ validation_y_train <-
 
 validation_dtrain <-
   xgb.DMatrix(
-    
     data =
       validation_x_train,
-    
     label =
       validation_y_train
   )
@@ -1161,14 +1077,11 @@ stopifnot(
 # ------------------------------------------------
 
 xgb_candidates <- data.frame(
-  
   Configuration =
     paste0(
       "XGB",
       1:8
     ),
-  
-  
   nrounds =
     c(
       250L,
@@ -1180,8 +1093,6 @@ xgb_candidates <- data.frame(
       300L,
       500L
     ),
-  
-  
   max_depth =
     c(
       3L,
@@ -1193,8 +1104,6 @@ xgb_candidates <- data.frame(
       6L,
       6L
     ),
-  
-  
   eta =
     c(
       0.05,
@@ -1206,8 +1115,6 @@ xgb_candidates <- data.frame(
       0.05,
       0.03
     ),
-  
-  
   min_child_weight =
     c(
       5,
@@ -1219,8 +1126,6 @@ xgb_candidates <- data.frame(
       10,
       10
     ),
-  
-  
   subsample =
     c(
       0.8,
@@ -1232,8 +1137,6 @@ xgb_candidates <- data.frame(
       0.9,
       0.9
     ),
-  
-  
   colsample_bytree =
     c(
       0.9,
@@ -1245,8 +1148,6 @@ xgb_candidates <- data.frame(
       1.0,
       1.0
     ),
-  
-  
   stringsAsFactors =
     FALSE
 )
@@ -1272,129 +1173,105 @@ for (
     )
   )
 ) {
-  
-  
   candidate <-
     xgb_candidates[
       i,
     ]
-  
-  
+
+
   cat(
     "\nEvaluating",
     candidate$Configuration,
     "...\n"
   )
-  
-  
+
+
   candidate_params <- list(
-    
     objective =
       "reg:squarederror",
-    
     eval_metric =
       "rmse",
-    
     max_depth =
       candidate$max_depth,
-    
     eta =
       candidate$eta,
-    
     min_child_weight =
       candidate$min_child_weight,
-    
     subsample =
       candidate$subsample,
-    
     colsample_bytree =
       candidate$colsample_bytree,
-    
     nthread =
       1,
-    
     seed =
       2094
   )
-  
-  
+
+
   set.seed(
     2094
   )
-  
-  
+
+
   candidate_model <-
     xgb.train(
-      
       params =
         candidate_params,
-      
       data =
         validation_dtrain,
-      
       nrounds =
         candidate$nrounds,
-      
       verbose =
         0
     )
-  
-  
+
+
   # --------------------------------
   # Fixed-origin validation forecast
   #
   # Start with TRAIN W only.
   # Validation actual W is NEVER fed back.
   # --------------------------------
-  
+
   validation_w_hat <-
     recursive_w_forecast(
-      
       model =
         candidate_model,
-      
       w_history =
         w_train,
-      
       future_data =
         validation_data
     )
-  
-  
+
+
   # --------------------------------
   # Reconstruct original traffic scale
   #
   # Start with TRAIN Y only.
   # --------------------------------
-  
+
   validation_y_hat <-
     inverse_seasonal_difference(
-      
       w_forecast =
         validation_w_hat,
-      
       y_history =
         train_y,
-      
       m =
         m
     )
-  
-  
+
+
   validation_metrics <-
     evaluate_forecast(
-      
       actual =
         validation_data$traffic_volume,
-      
       predicted =
         validation_y_hat,
-      
       mase_scale =
         mase_scale
     )
-  
-  
+
+
   xgb_validation_results[[i]] <-
     cbind(
       candidate,
@@ -1477,7 +1354,6 @@ print(
 if (
   selected_configuration$Configuration != "XGB2"
 ) {
-  
   stop(
     paste(
       "Unexpected validation winner:",
@@ -1502,31 +1378,22 @@ if (
 # ------------------------------------------------
 
 xgb_params <- list(
-  
   objective =
     "reg:squarederror",
-  
   eval_metric =
     "rmse",
-  
   max_depth =
     3L,
-  
   eta =
     0.03,
-  
   min_child_weight =
     5,
-  
   subsample =
     0.8,
-  
   colsample_bytree =
     0.9,
-  
   nthread =
     1,
-  
   seed =
     2094
 )
@@ -1564,26 +1431,20 @@ w_final <-
 
 xgb_training_data <-
   create_xgb_features(
-    
     w =
       w_final,
-    
     hour =
       final_data$hour,
-    
     day_of_week =
       final_data$day_of_week_num,
-    
     month =
       final_data$month,
-    
     is_holiday =
       final_data$is_holiday_num
   )
 
 
 x_train <- as.matrix(
-  
   xgb_training_data[
     ,
     c(
@@ -1605,10 +1466,8 @@ y_train <-
 
 dtrain <-
   xgb.DMatrix(
-    
     data =
       x_train,
-    
     label =
       y_train
   )
@@ -1618,7 +1477,6 @@ stopifnot(
   length(
     final_y
   ) == 22357,
-  
   nrow(
     x_train
   ) == 22021
@@ -1632,16 +1490,12 @@ set.seed(
 
 xgb_final_model <-
   xgb.train(
-    
     params =
       xgb_params,
-    
     data =
       dtrain,
-    
     nrounds =
       xgb_nrounds,
-    
     verbose =
       0
   )
@@ -1667,13 +1521,10 @@ test_future <- traffic[
 
 xgb_test_w_hat <-
   recursive_w_forecast(
-    
     model =
       xgb_final_model,
-    
     w_history =
       w_final,
-    
     future_data =
       test_future
   )
@@ -1685,13 +1536,10 @@ xgb_test_w_hat <-
 
 xgb_test_y_hat <-
   inverse_seasonal_difference(
-    
     w_forecast =
       xgb_test_w_hat,
-    
     y_history =
       final_y,
-    
     m =
       m
   )
@@ -1707,13 +1555,10 @@ xgb_test_actual <-
 
 xgb_test_metrics <-
   evaluate_forecast(
-    
     actual =
       xgb_test_actual,
-    
     predicted =
       xgb_test_y_hat,
-    
     mase_scale =
       mase_scale
   )
@@ -1740,22 +1585,16 @@ print(
 # Group comparison object.
 
 xgb_group_result <- data.frame(
-  
   Model =
     "XGBoost",
-  
   RMSE =
     xgb_test_metrics$RMSE,
-  
   MAE =
     xgb_test_metrics$MAE,
-  
   MAPE =
     xgb_test_metrics$MAPE,
-  
   sMAPE =
     xgb_test_metrics$sMAPE,
-  
   MASE =
     xgb_test_metrics$MASE
 )
@@ -1796,14 +1635,13 @@ negative_forecasts <-
 
 
 negative_percentage <-
-  
   negative_forecasts /
-  
-  length(
-    xgb_test_y_hat
-  ) *
-  
-  100
+
+    length(
+      xgb_test_y_hat
+    ) *
+
+    100
 
 
 cat(
@@ -1891,15 +1729,11 @@ xgb_test_residuals <-
 
 xgb_lb_24 <-
   Box.test(
-    
     xgb_test_residuals,
-    
     lag =
       24,
-    
     type =
       "Ljung-Box",
-    
     fitdf =
       0
   )
@@ -1907,15 +1741,11 @@ xgb_lb_24 <-
 
 xgb_lb_48 <-
   Box.test(
-    
     xgb_test_residuals,
-    
     lag =
       48,
-    
     type =
       "Ljung-Box",
-    
     fitdf =
       0
   )
@@ -1923,15 +1753,11 @@ xgb_lb_48 <-
 
 xgb_lb_168 <-
   Box.test(
-    
     xgb_test_residuals,
-    
     lag =
       168,
-    
     type =
       "Ljung-Box",
-    
     fitdf =
       0
   )
@@ -2032,61 +1858,47 @@ dir.create(
 # ================================================================
 
 write.csv(
-  
   xgb_validation_results,
-  
   file.path(
     output_dir,
     "xgboost_validation_results.csv"
   ),
-  
   row.names =
     FALSE
 )
 
 
 xgb_predictions <- data.frame(
-  
   date_time =
     test_future$date_time,
-  
   actual =
     xgb_test_actual,
-  
   predicted =
     xgb_test_y_hat,
-  
   residual =
     xgb_test_residuals,
-  
   differenced_forecast =
     xgb_test_w_hat
 )
 
 
 write.csv(
-  
   xgb_predictions,
-  
   file.path(
     output_dir,
     "final_test_predictions.csv"
   ),
-  
   row.names =
     FALSE
 )
 
 
 write.csv(
-  
   xgb_test_metrics,
-  
   file.path(
     output_dir,
     "final_test_metrics.csv"
   ),
-  
   row.names =
     FALSE
 )
@@ -2117,22 +1929,18 @@ FORECAST_HOURS <-
 
 
 forecast_start <-
-  
   max(
     traffic$date_time
   ) +
-  
+
   3600
 
 
 future_dates <- seq(
-  
   from =
     forecast_start,
-  
   by =
     "hour",
-  
   length.out =
     FORECAST_HOURS
 )
@@ -2156,7 +1964,6 @@ future_month <-
 # Monday = 1, ..., Sunday = 7
 
 future_day_of_week <-
-  
   (
     (
       future_lt$wday +
@@ -2164,7 +1971,7 @@ future_day_of_week <-
     ) %%
       7L
   ) +
-  
+
   1L
 
 
@@ -2179,19 +1986,14 @@ future_is_holiday <-
 
 
 xgb_future_data <- data.frame(
-  
   date_time =
     future_dates,
-  
   hour =
     future_hour,
-  
   day_of_week_num =
     future_day_of_week,
-  
   month =
     future_month,
-  
   is_holiday_num =
     future_is_holiday
 )
@@ -2220,26 +2022,20 @@ w_all <-
 
 xgb_all_training_data <-
   create_xgb_features(
-    
     w =
       w_all,
-    
     hour =
       traffic$hour,
-    
     day_of_week =
       traffic$day_of_week_num,
-    
     month =
       traffic$month,
-    
     is_holiday =
       traffic$is_holiday_num
   )
 
 
 x_all <- as.matrix(
-  
   xgb_all_training_data[
     ,
     c(
@@ -2261,10 +2057,8 @@ y_all <-
 
 dall <-
   xgb.DMatrix(
-    
     data =
       x_all,
-    
     label =
       y_all
   )
@@ -2277,16 +2071,12 @@ set.seed(
 
 xgb_future_model <-
   xgb.train(
-    
     params =
       xgb_params,
-    
     data =
       dall,
-    
     nrounds =
       xgb_nrounds,
-    
     verbose =
       0
   )
@@ -2298,13 +2088,10 @@ xgb_future_model <-
 
 xgb_future_w_hat <-
   recursive_w_forecast(
-    
     model =
       xgb_future_model,
-    
     w_history =
       w_all,
-    
     future_data =
       xgb_future_data
   )
@@ -2312,13 +2099,10 @@ xgb_future_w_hat <-
 
 xgb_future_y_hat <-
   inverse_seasonal_difference(
-    
     w_forecast =
       xgb_future_w_hat,
-    
     y_history =
       all_y,
-    
     m =
       m
   )
@@ -2335,36 +2119,27 @@ future_weekday_names <-
 
 
 xgb_future_forecast <- data.frame(
-  
   date_time =
     future_dates,
-  
   forecast =
     xgb_future_y_hat,
-  
   differenced_forecast =
     xgb_future_w_hat,
-  
   day_of_week =
     future_weekday_names,
-  
   hour =
     future_hour,
-  
   is_holiday =
     future_is_holiday
 )
 
 
 write.csv(
-  
   xgb_future_forecast,
-  
   file.path(
     output_dir,
     "xgboost_future_forecast.csv"
   ),
-  
   row.names =
     FALSE
 )
@@ -2569,94 +2344,71 @@ cat(
 # ================================================================
 
 png(
-  
   file.path(
     output_dir,
     "fig1_test_full.png"
   ),
-  
   width =
     1800,
-  
   height =
     900,
-  
   res =
     150
 )
 
 
 plot(
-  
   test_future$date_time,
-  
   xgb_test_actual,
-  
   type =
     "l",
-  
   lwd =
     1,
-  
   col =
     "blue",
-  
   xlab =
     "Date",
-  
   ylab =
     "Traffic Volume (vehicles/hour)",
-  
   main =
     "XGBoost: Actual vs Forecast - Full Test Period"
 )
 
 
 lines(
-  
   test_future$date_time,
-  
   xgb_test_y_hat,
-  
   lwd =
     1,
-  
   lty =
     2,
-  
   col =
     "red"
 )
 
 
 legend(
-  
   "topright",
-  
   legend =
     c(
       "Actual Traffic",
       "XGBoost Forecast"
     ),
-  
   col =
     c(
       "blue",
       "red"
     ),
-  
   lty =
     c(
       1,
       2
     ),
-  
   lwd =
     c(
       1,
       1
     ),
-  
   bty =
     "n"
 )
@@ -2670,11 +2422,9 @@ dev.off()
 # ================================================================
 
 four_weeks <- min(
-  
   24L *
     7L *
     4L,
-  
   length(
     xgb_test_actual
   )
@@ -2682,102 +2432,79 @@ four_weeks <- min(
 
 
 png(
-  
   file.path(
     output_dir,
     "fig2_test_first_4_weeks.png"
   ),
-  
   width =
     1800,
-  
   height =
     900,
-  
   res =
     150
 )
 
 
 plot(
-  
   test_future$date_time[
     1:four_weeks
   ],
-  
   xgb_test_actual[
     1:four_weeks
   ],
-  
   type =
     "l",
-  
   lwd =
     1,
-  
   col =
     "blue",
-  
   xlab =
     "Date",
-  
   ylab =
     "Traffic Volume (vehicles/hour)",
-  
   main =
     "XGBoost: Actual vs Forecast - First Four Weeks"
 )
 
 
 lines(
-  
   test_future$date_time[
     1:four_weeks
   ],
-  
   xgb_test_y_hat[
     1:four_weeks
   ],
-  
   lwd =
     1,
-  
   lty =
     2,
-  
   col =
     "red"
 )
 
 
 legend(
-  
   "topright",
-  
   legend =
     c(
       "Actual Traffic",
       "XGBoost Forecast"
     ),
-  
   col =
     c(
       "blue",
       "red"
     ),
-  
   lty =
     c(
       1,
       2
     ),
-  
   lwd =
     c(
       1,
       1
     ),
-  
   bty =
     "n"
 )
@@ -2792,22 +2519,21 @@ dev.off()
 
 observed_tail_hours <-
   24L *
-  7L *
-  2L
+    7L *
+    2L
 
 
 observed_tail_idx <-
-  
   (
     nrow(
       traffic
     ) -
-      
+
       observed_tail_hours +
-      
+
       1L
   ):
-  
+
   nrow(
     traffic
   )
@@ -2826,17 +2552,13 @@ observed_tail_values <-
 
 
 combined_dates <- c(
-  
   observed_tail_dates,
-  
   future_dates
 )
 
 
 combined_values <- c(
-  
   observed_tail_values,
-  
   xgb_future_y_hat
 )
 
@@ -2848,119 +2570,91 @@ y_range <- range(
 
 
 png(
-  
   file.path(
     output_dir,
     "fig3_future_forecast.png"
   ),
-  
   width =
     1800,
-  
   height =
     900,
-  
   res =
     150
 )
 
 
 plot(
-  
   observed_tail_dates,
-  
   observed_tail_values,
-  
   type =
     "l",
-  
   lwd =
     1,
-  
   col =
     "blue",
-  
   xlim =
     range(
       combined_dates
     ),
-  
   ylim =
     y_range,
-  
   xlab =
     "Date",
-  
   ylab =
     "Traffic Volume (vehicles/hour)",
-  
   main =
     "XGBoost: One-Week Forward Traffic Forecast"
 )
 
 
 lines(
-  
   future_dates,
-  
   xgb_future_y_hat,
-  
   lwd =
     1.5,
-  
   lty =
     2,
-  
   col =
     "red"
 )
 
 
 abline(
-  
   v =
     forecast_start,
-  
   lty =
     3,
-  
   col =
     "darkgray"
 )
 
 
 legend(
-  
   "topright",
-  
   legend =
     c(
       "Observed Traffic",
       "Future XGBoost Forecast",
       "Forecast Origin"
     ),
-  
   col =
     c(
       "blue",
       "red",
       "darkgray"
     ),
-  
   lty =
     c(
       1,
       2,
       3
     ),
-  
   lwd =
     c(
       1,
       1.5,
       1
     ),
-  
   bty =
     "n"
 )
@@ -2974,25 +2668,20 @@ dev.off()
 # ================================================================
 
 png(
-  
   file.path(
     output_dir,
     "fig4_xgboost_residual_analysis.png"
   ),
-  
   width =
     1800,
-  
   height =
     1100,
-  
   res =
     150
 )
 
 
 layout(
-  
   matrix(
     c(
       1,
@@ -3000,14 +2689,11 @@ layout(
       2,
       3
     ),
-    
     nrow =
       2,
-    
     byrow =
       TRUE
   ),
-  
   heights =
     c(
       1.1,
@@ -3032,34 +2718,25 @@ par(
 
 
 plot(
-  
   xgb_test_residuals,
-  
   type =
     "l",
-  
   lwd =
     0.7,
-  
   xlab =
     "Test Observation",
-  
   ylab =
     "Residual",
-  
   main =
     "XGBoost Test Forecast Residuals"
 )
 
 
 abline(
-  
   h =
     0,
-  
   lty =
     2,
-  
   col =
     "darkgray"
 )
@@ -3081,18 +2758,13 @@ par(
 
 
 acf(
-  
   xgb_test_residuals,
-  
   lag.max =
     168,
-  
   main =
     "ACF of Residuals",
-  
   xlab =
     "Lag (hours)",
-  
   ylab =
     "ACF"
 )
@@ -3114,35 +2786,26 @@ par(
 
 
 hist(
-  
   xgb_test_residuals,
-  
   breaks =
     60,
-  
   probability =
     TRUE,
-  
   main =
     "Distribution of Residuals",
-  
   xlab =
     "Residuals",
-  
   ylab =
     "Density"
 )
 
 
 lines(
-  
   density(
     xgb_test_residuals
   ),
-  
   lwd =
     2,
-  
   col =
     "red"
 )
