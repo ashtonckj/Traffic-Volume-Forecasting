@@ -14,8 +14,8 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 # ── 1. Paths & Model Configuration ───────────────────────────
 input_path       <- "data/processed/traffic_volume_processed.csv"
-MODEL_TYPE       <- "full" # Options: "pure", "holiday", "full"
-REFIT_WITH_VALID <- FALSE  # Set TRUE to combine Train+Valid before test forecast
+MODEL_TYPE       <- "holiday" # Options: "pure", "holiday", "full"
+REFIT_WITH_VALID <- TRUE  # Set TRUE to combine Train+Valid before test forecast
 FAST_RUN         <- TRUE   # Set FALSE for exhaustive search before final submission
 
 output_dir <- switch(MODEL_TYPE,

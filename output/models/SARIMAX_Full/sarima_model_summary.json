@@ -2,9 +2,9 @@
   "model": {
     "type": "full",
     "order": {
-      "p": 5,
+      "p": 1,
       "d": 0,
-      "q": 3
+      "q": 2
     },
     "seasonal_order": {
       "P": "NA",
@@ -18,10 +18,10 @@
       "lag": 168
     },
     "xreg_cols": ["is_holiday", "temp", "rain_1h", "snow_1h", "clouds_all"],
-    "AIC": 268515.1787,
-    "AICc": 268515.2018,
-    "BIC": 268624.541,
-    "log_likelihood": -134243.5894
+    "AIC": 327411.7938,
+    "AICc": 327411.8019,
+    "BIC": 327483.86,
+    "log_likelihood": -163696.8969
   },
   "residual_tests": {
     "Ljung_Box_lag48_p": 0,
@@ -29,25 +29,25 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 414.0486,
-    "RMSE": 1064.3236,
-    "MAE": 705.1293,
-    "MAPE": 26.2108,
-    "sMAPE": 31.1361,
-    "MASE": 2.1067
+    "ME": 421.3136,
+    "RMSE": 1063.6101,
+    "MAE": 698.0917,
+    "MAPE": 25.7799,
+    "sMAPE": 30.5659,
+    "MASE": 2.0857
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 0,
-    "RMSE": 1064.3236,
-    "MAE": 705.1293,
-    "MAPE": 26.2108,
-    "sMAPE": 31.1361
+    "RMSE": 1063.6101,
+    "MAE": 698.0917,
+    "MAPE": 25.7799,
+    "sMAPE": 30.5659
   },
   "split": {
     "total_n": 26304,
     "train_n": 18412,
     "valid_h": 3945,
     "test_h": 3947,
-    "refit_with_valid": false
+    "refit_with_valid": true
   }
 }

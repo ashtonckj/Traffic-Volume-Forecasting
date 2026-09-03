@@ -18,10 +18,10 @@
       "lag": 168
     },
     "xreg_cols": "None (Pure SARIMA)",
-    "AIC": 268742.1848,
-    "AICc": 268742.187,
-    "BIC": 268773.4312,
-    "log_likelihood": -134367.0924
+    "AIC": 327458.3712,
+    "AICc": 327458.373,
+    "BIC": 327490.4006,
+    "log_likelihood": -163725.1856
   },
   "residual_tests": {
     "Ljung_Box_lag48_p": 0,
@@ -29,25 +29,25 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 448.4472,
-    "RMSE": 1097.4117,
-    "MAE": 703.7562,
-    "MAPE": 25.4682,
-    "sMAPE": 31.4594,
-    "MASE": 2.1026
+    "ME": 455.1471,
+    "RMSE": 1095.9087,
+    "MAE": 700.9196,
+    "MAPE": 25.4846,
+    "sMAPE": 31.4984,
+    "MASE": 2.0942
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 0,
-    "RMSE": 1097.4117,
-    "MAE": 703.7562,
-    "MAPE": 25.4682,
-    "sMAPE": 31.4594
+    "RMSE": 1095.9087,
+    "MAE": 700.9196,
+    "MAPE": 25.4846,
+    "sMAPE": 31.4984
   },
   "split": {
     "total_n": 26304,
     "train_n": 18412,
     "valid_h": 3945,
     "test_h": 3947,
-    "refit_with_valid": false
+    "refit_with_valid": true
   }
 }
