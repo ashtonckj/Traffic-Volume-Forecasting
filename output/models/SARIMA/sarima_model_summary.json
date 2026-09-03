@@ -1,9 +1,10 @@
 {
   "model": {
+    "type": "pure",
     "order": {
-      "p": 5,
+      "p": 1,
       "d": 0,
-      "q": 3
+      "q": 2
     },
     "seasonal_order": {
       "P": "NA",
@@ -14,19 +15,13 @@
     "differencing": {
       "d": 0,
       "D": 1,
-      "lag": 168,
-      "note": "Pre-differenced before auto.arima; d=D=0 inside fit"
+      "lag": 168
     },
-    "xreg_cols": ["is_holiday", "temp_s", "rain_s", "snow_s", "cloud_s"],
-    "AIC": 268515.3211,
-    "AICc": 268515.3441,
-    "BIC": 268624.6834,
-    "log_likelihood": -134243.6605
-  },
-  "stationarity": {
-    "note": "Tested in differencing.R — see stationarity_summary.csv",
-    "d_order": 0,
-    "D_order": 1
+    "xreg_cols": "None (Pure SARIMA)",
+    "AIC": 268742.1848,
+    "AICc": 268742.187,
+    "BIC": 268773.4312,
+    "log_likelihood": -134367.0924
   },
   "residual_tests": {
     "Ljung_Box_lag48_p": 0,
@@ -34,28 +29,25 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 508.0714,
-    "RMSE": 1103.4864,
-    "MAE": 730.0821,
-    "MAPE": 27.3774,
-    "sMAPE": 34.6113,
-    "MASE": 1.2595
+    "ME": 448.4472,
+    "RMSE": 1097.4117,
+    "MAE": 703.7562,
+    "MAPE": 25.4682,
+    "sMAPE": 31.4594,
+    "MASE": 2.1026
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 0,
-    "RMSE": 1103.4864,
-    "MAE": 730.0821,
-    "MAPE": 27.3774,
-    "sMAPE": 34.6113
+    "RMSE": 1097.4117,
+    "MAE": 703.7562,
+    "MAPE": 25.4682,
+    "sMAPE": 31.4594
   },
   "split": {
     "total_n": 26304,
     "train_n": 18412,
     "valid_h": 3945,
     "test_h": 3947,
-    "train_pct": 70,
-    "valid_pct": 15,
-    "test_pct": 15,
     "refit_with_valid": false
   }
 }

@@ -1,5 +1,6 @@
 {
   "model": {
+    "type": "full",
     "order": {
       "p": 5,
       "d": 0,
@@ -14,19 +15,13 @@
     "differencing": {
       "d": 0,
       "D": 1,
-      "lag": 168,
-      "note": "Pre-differenced before auto.arima; d=D=0 inside fit"
+      "lag": 168
     },
-    "xreg_cols": ["is_holiday", "temp_s", "rain_s", "snow_s", "cloud_s"],
-    "AIC": 268515.3211,
-    "AICc": 268515.3441,
-    "BIC": 268624.6834,
-    "log_likelihood": -134243.6605
-  },
-  "stationarity": {
-    "note": "Tested in differencing.R — see stationarity_summary.csv",
-    "d_order": 0,
-    "D_order": 1
+    "xreg_cols": ["is_holiday", "temp", "rain_1h", "snow_1h", "clouds_all"],
+    "AIC": 268515.1787,
+    "AICc": 268515.2018,
+    "BIC": 268624.541,
+    "log_likelihood": -134243.5894
   },
   "residual_tests": {
     "Ljung_Box_lag48_p": 0,
@@ -34,28 +29,25 @@
     "Shapiro_Wilk_p": 0
   },
   "accuracy": {
-    "ME": 508.0714,
-    "RMSE": 1103.4864,
-    "MAE": 730.0821,
-    "MAPE": 27.3774,
-    "sMAPE": 34.6113,
-    "MASE": 1.2595
+    "ME": 414.0486,
+    "RMSE": 1064.3236,
+    "MAE": 705.1293,
+    "MAPE": 26.2108,
+    "sMAPE": 31.1361,
+    "MASE": 2.1067
   },
   "accuracy_observed_only": {
     "n_imputed_in_test": 0,
-    "RMSE": 1103.4864,
-    "MAE": 730.0821,
-    "MAPE": 27.3774,
-    "sMAPE": 34.6113
+    "RMSE": 1064.3236,
+    "MAE": 705.1293,
+    "MAPE": 26.2108,
+    "sMAPE": 31.1361
   },
   "split": {
     "total_n": 26304,
     "train_n": 18412,
     "valid_h": 3945,
     "test_h": 3947,
-    "train_pct": 70,
-    "valid_pct": 15,
-    "test_pct": 15,
     "refit_with_valid": false
   }
 }
