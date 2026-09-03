@@ -52,6 +52,38 @@ cat("Holiday days:", length(holiday_dates), "->", sum(df$is_holiday), "holiday h
 df$is_holiday <- ifelse(df$holiday != "none", 1L, 0L)
 df$holiday <- NULL
 
+# ---- 6b. Outlier Detection Visualization ----
+# Create output directory for figures
+fig_dir <- "output/figures"
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+
+# Export a 4-panel diagnostic grid showing physical anomalies before cleaning
+png(file.path(fig_dir, "outlier_detection.png"), width = 1200, height = 800, res = 130)
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+
+# 1. Temperature 0 K anomaly plot
+plot(df$date_time, df$temp, type = "l", col = "#2c7fb8",
+     main = "Temperature (0 K Measurement Error)", xlab = "Date", ylab = "Temperature (Kelvin)")
+points(df$date_time[df$temp <= 0], df$temp[df$temp <= 0], col = "red", pch = 19, cex = 1.5)
+legend("bottomleft", legend = "Physical Error (0 K)", col = "red", pch = 19, bty = "n")
+
+# 2. Rainfall extreme spike plot
+plot(df$date_time, df$rain_1h, type = "l", col = "#2c7fb8",
+     main = "Rainfall Extreme Sensor Spike", xlab = "Date", ylab = "Rain (mm/h)")
+points(df$date_time[df$rain_1h > 300], df$rain_1h[df$rain_1h > 300], col = "red", pch = 19, cex = 1.5)
+legend("topright", legend = "Sensor Failure (>300 mm/h)", col = "red", pch = 19, bty = "n")
+
+# 3. Traffic Volume Distribution (Boxplot check)
+boxplot(df$traffic_volume, main = "Traffic Volume Distribution",
+        ylab = "Vehicles / Hour", col = "#756bb1")
+
+# 4. Raw Traffic Volume Time Series
+plot(df$date_time, df$traffic_volume, type = "l", col = "#333333",
+     main = "Raw Traffic Volume Series", xlab = "Date", ylab = "Vehicles / Hour")
+
+dev.off()
+cat("Saved outlier diagnostic plot ->", file.path(fig_dir, "outlier_detection.png"), "\n")
+
 # ---- 7. Fix physically impossible values via linear interpolation ----
 # temp of 0 K, and one 9831 mm/h rain reading
 # (next-highest valid value is 55.63, so 300 isolates just that one).
