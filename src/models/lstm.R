@@ -2,8 +2,7 @@ suppressPackageStartupMessages(library(keras3))
 suppressPackageStartupMessages(library(ggplot2))
 
 OUT <- "output/models/lstm"
-FIG <- file.path(OUT, "figures")
-dir.create(FIG, recursive = TRUE, showWarnings = FALSE)
+dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
 
 # 1. CONFIGURATION  (winning configuration from tuning_results.csv)
 CSV_PATH <- "data/processed/traffic_volume_processed.csv"
@@ -337,7 +336,7 @@ d1  <- rbind(data.frame(t = wk$date_time, v = wk$actual,    series = "Actual"),
              data.frame(t = wk$date_time, v = wk$predicted, series = "LSTM forecast"))
 d1$series <- factor(d1$series, levels = c("Actual", "LSTM forecast"))
 
-ggsave(file.path(FIG, "fig1_test_week.png"),
+ggsave(file.path(OUT, "fig1_test_week.png"),
   ggplot(d1, aes(t, v, colour = series, linetype = series)) +
     geom_line(linewidth = 0.45) +
     scale_colour_manual(values = c("Actual" = COL_A, "LSTM forecast" = COL_B)) +
@@ -351,7 +350,7 @@ d2 <- rbind(data.frame(e = test_df$err_lstm,  series = "LSTM"),
             data.frame(e = test_df$err_naive, series = "Seasonal naive"))
 d2$series <- factor(d2$series, levels = c("LSTM", "Seasonal naive"))
 
-ggsave(file.path(FIG, "fig2_error_ecdf.png"),
+ggsave(file.path(OUT, "fig2_error_ecdf.png"),
   ggplot(d2, aes(e, colour = series, linetype = series)) +
     stat_ecdf(linewidth = 0.45, pad = FALSE) +
     scale_colour_manual(values = c("LSTM" = COL_A, "Seasonal naive" = COL_B)) +
@@ -367,7 +366,7 @@ d3 <- rbind(
   data.frame(hour = 0:23, mae = as.numeric(tapply(test_df$err_naive, test_df$hr, mean)), series = "Seasonal naive"))
 d3$series <- factor(d3$series, levels = c("LSTM", "Seasonal naive"))
 
-ggsave(file.path(FIG, "fig3_error_by_hour.png"),
+ggsave(file.path(OUT, "fig3_error_by_hour.png"),
   ggplot(d3, aes(hour, mae, colour = series, linetype = series)) +
     geom_line(linewidth = 0.45) +
     scale_colour_manual(values = c("LSTM" = COL_A, "Seasonal naive" = COL_B)) +
@@ -383,7 +382,7 @@ d4 <- rbind(data.frame(t = tail_obs$date_time, v = tail_obs$traffic_volume, seri
             data.frame(t = forecast_df$date_time, v = forecast_df$forecast, series = "Forecast"))
 d4$series <- factor(d4$series, levels = c("Observed", "Forecast"))
 
-ggsave(file.path(FIG, "fig4_future_forecast.png"),
+ggsave(file.path(OUT, "fig4_future_forecast.png"),
   ggplot(d4, aes(t, v, colour = series, linetype = series)) +
     geom_line(linewidth = 0.4) +
     geom_vline(xintercept = as.numeric(FORECAST_START), linewidth = 0.3,
@@ -424,4 +423,4 @@ cat(sprintf("  last observed week mean %.0f | forecast week mean %.0f\n",
             mean(tail(df$traffic_volume, 168)), mean(forecast_df$forecast)))
 cat("============================================\n")
 
-cat(sprintf("\nSaved to %s and %s\n", OUT, FIG))
+cat(sprintf("\nSaved to %s\n", OUT))
