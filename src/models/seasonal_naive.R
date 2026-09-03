@@ -60,8 +60,7 @@ seasonal_mase_scale <- function(train_values, seasonal_period) {
   if (length(train_values) <= seasonal_period) {
     stop("Not enough training observations to calculate the MASE scale.")
   }
-  scale <- mean(abs(train_values[(seasonal_period + 1):length(train_values)] -
-                      train_values[1:(length(train_values) - seasonal_period)]))
+  scale <- mean(abs(train_values[(seasonal_period + 1):length(train_values)] - train_values[1:(length(train_values) - seasonal_period)]))
   if (!is.finite(scale) || scale == 0) {
     stop("The MASE scale must be a positive finite number.")
   }
