@@ -26,9 +26,14 @@ if (length(new)) install.packages(new, dependencies = TRUE)
 invisible(lapply(pkgs, library, character.only = TRUE))
 
 
-# ── 1. Paths ─────────────────────────────────────────────────
-input_path <- "data/processed/traffic_volume_processed.csv"
-output_dir <- "output/models/SARIMAX Full"
+# ── 1. Paths & Model Configuration ───────────────────────────
+MODEL_TYPE <- "full" # Options: "pure", "holiday", "full"
+
+output_dir <- switch(MODEL_TYPE,
+                     "pure"    = "output/models/SARIMA",
+                     "holiday" = "output/models/SARIMAX_Holiday",
+                     "full"    = "output/models/SARIMAX_Full"
+)
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 
@@ -248,43 +253,23 @@ write.csv(stationarity_summary,
 cat("Saved -> ", file.path(output_dir, "stationarity_summary.csv"), "\n")
 
 
-# ── 7. xreg: ALL available columns (exploratory — see caveats below) ────
-# Columns available: temp, rain_1h, snow_1h, clouds_all, is_holiday,
-# hour, month, day_of_week. (traffic_volume is the target; is_imputed
-# and split are bookkeeping, not predictors.)
-#
-# hour, month, day_of_week are categorical -> dummy-encoded via model.matrix.
-# Continuous weather vars are scaled using TRAIN stats only (no leakage).
-#
-# CAVEAT: temp/rain_1h/snow_1h/clouds_all use ACTUAL historical values in
-# validation/test, which assumes perfect future weather knowledge. This is
-# fine for an exploratory upper-bound test, but is NOT a deployable model
-# unless these are replaced with forecasted weather at inference time.
-
-build_xreg <- function(idx, ref_idx = train_idx) {
+# ── 7. xreg: Build Exogenous Feature Matrices (Unscaled) ──────
+build_xreg <- function(idx, type = MODEL_TYPE) {
+  if (type == "pure") return(NULL)
+  
   d <- df[idx, ]
-  
-  # Scale continuous weather features using train-only mean/sd
-  temp_mean <- mean(df$temp[ref_idx]);   temp_sd <- sd(df$temp[ref_idx])
-  rain_mean <- mean(df$rain_1h[ref_idx]);  rain_sd <- sd(df$rain_1h[ref_idx])
-  snow_mean <- mean(df$snow_1h[ref_idx]);  snow_sd <- sd(df$snow_1h[ref_idx])
-  cloud_mean<- mean(df$clouds_all[ref_idx]); cloud_sd<- sd(df$clouds_all[ref_idx])
-  
-  d$temp_s <- (d$temp   - temp_mean) / temp_sd
-  d$rain_s <- (d$rain_1h  - rain_mean) / ifelse(rain_sd==0, 1, rain_sd)
-  d$snow_s <- (d$snow_1h  - snow_mean) / ifelse(snow_sd==0, 1, snow_sd)
-  d$cloud_s <- (d$clouds_all - cloud_mean) / cloud_sd
-  
-  mm <- model.matrix(~ is_holiday + temp_s + rain_s + snow_s + cloud_s,
-                     data = d)[, -1] # drop intercept column
-  mm
+  if (type == "holiday") {
+    mm <- model.matrix(~ is_holiday, data = d)[, -1, drop = FALSE]
+  } else if (type == "full") {
+    # Unscaled raw regressors matching updated Methodology Section II.C
+    mm <- model.matrix(~ is_holiday + temp + rain_1h + snow_1h + clouds_all, data = d)[, -1]
+  }
+  return(mm)
 }
-xreg_train_full <- build_xreg(train_idx[(n_pad + 1):TRAIN_N])
-xreg_valid_full <- build_xreg(valid_idx)
-xreg_test_full <- build_xreg(test_idx)
 
-cat("Full xreg dim (train):", dim(xreg_train_full), "\n")
-cat("Columns:", ncol(xreg_train_full), "\n")
+xreg_train <- build_xreg(train_idx[(n_pad + 1):TRAIN_N])
+xreg_valid <- build_xreg(valid_idx)
+xreg_test  <- build_xreg(test_idx)
 
 # ── 7b. Collinearity check BEFORE fitting ────────────────────
 # Rank check: if rank < ncol, some columns are exact linear combinations
@@ -302,38 +287,19 @@ print(round(weather_cor, 2))
 
 
 # ── 8. Final Model Fitting ────────────────────────────────────
-# REFIT_WITH_VALID = FALSE -> fit on train only (conservative default)
-# REFIT_WITH_VALID = TRUE -> fold validation into the final fit once
-#               orders are selected (more data, no extra leakage)
-REFIT_WITH_VALID <- FALSE
-
-if (REFIT_WITH_VALID) {
-  ts_fit_final <- ts(c(as.numeric(ts_train_diff),
-                         as.numeric(ts_valid_diff)), frequency = 1)
-  xreg_fit_final <- rbind(xreg_train_full, xreg_valid)
-  cat(sprintf("\nFitting on TRAIN + VALIDATION (%d hours) ...\n",
-              length(ts_fit_final)))
-} else {
-  ts_fit_final <- ts_train_diff
-  xreg_fit_final <- xreg_train_full
-  cat(sprintf("\nFitting on TRAIN only (%d hours) ...\n",
-              length(ts_fit_final)))
-}
-cat("(stepwise=TRUE, approximation=TRUE — set both FALSE for exhaustive final fit)\n")
+# TOGGLE: Set both to FALSE for exhaustive final paper runs
+FAST_RUN <- TRUE 
 
 fit <- auto.arima(
   ts_fit_final,
-  xreg     = xreg_fit_final,
-  seasonal   = FALSE, # weekly seasonality already removed by D=1 diff
-  d      = 0,   # pre-differenced; no further differencing
-  D      = 0,
-  stepwise   = TRUE,
-  approximation = TRUE,
-  trace    = TRUE
+  xreg          = xreg_fit_final,
+  seasonal      = FALSE, # Weekly cycle removed via D=1 diff
+  d             = 0,     # Pre-differenced series
+  D             = 0,
+  stepwise      = FAST_RUN,
+  approximation = FAST_RUN,
+  trace         = TRUE
 )
-cat("\n--- Fitted model ---\n")
-print(summary(fit))
-
 
 # ── 9. Residual Diagnostics ───────────────────────────────────
 resid <- residuals(fit)
