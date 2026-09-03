@@ -4,7 +4,7 @@ library(zoo)
 # ---- 0. Paths ----
 raw_path <- "data/raw/Metro_Interstate_Traffic_Volume.csv"
 output_dir <- "data/processed"
-fig_dir <- "output/figures"
+fig_dir <- "output/exploratory"
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
