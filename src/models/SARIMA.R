@@ -19,9 +19,9 @@ REFIT_WITH_VALID <- FALSE  # Set TRUE to combine Train+Valid before test forecas
 FAST_RUN         <- TRUE   # Set FALSE for exhaustive search before final submission
 
 output_dir <- switch(MODEL_TYPE,
-                     "pure"    = "output/models/SARIMA",
-                     "holiday" = "output/models/SARIMAX_Holiday",
-                     "full"    = "output/models/SARIMAX_Full"
+  "pure"    = "output/models/SARIMA",
+  "holiday" = "output/models/SARIMAX_Holiday",
+  "full"    = "output/models/SARIMAX_Full"
 )
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
@@ -32,14 +32,14 @@ df <- read.csv(input_path, stringsAsFactors = FALSE)
 df$date_time <- as.POSIXct(df$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
 df <- df %>% arrange(date_time)
 
-cat("Loaded:", nrow(df), "rows | Range:", 
+cat("Loaded:", nrow(df), "rows | Range:",
     as.character(min(df$date_time)), "to", as.character(max(df$date_time)), "\n")
 
 if (!"is_imputed" %in% names(df)) {
   warning("is_imputed column not found — assuming all rows observed.")
   df$is_imputed <- 0L
 }
-cat(sprintf("Imputed hours: %d / %d (%.1f%%)\n", 
+cat(sprintf("Imputed hours: %d / %d (%.1f%%)\n",
             sum(df$is_imputed), nrow(df), 100 * mean(df$is_imputed)))
 
 
@@ -54,7 +54,7 @@ df$day_of_week <- factor(df$day_of_week, levels = day_levels)
 # ── 3. Guard: Complete Hourly Grid ───────────────────────────
 expected_hours <- as.numeric(difftime(max(df$date_time), min(df$date_time), units = "hours")) + 1
 if (nrow(df) != expected_hours) {
-  stop("Series is not a complete hourly grid. Expected ", expected_hours, 
+  stop("Series is not a complete hourly grid. Expected ", expected_hours,
        " rows but found ", nrow(df), ". Re-run preprocessing script.")
 }
 cat("Grid check passed.\n")
@@ -165,7 +165,7 @@ if (!is.null(xreg_train_full)) {
   cat(sprintf("\nDesign matrix: %d columns, rank = %d %s\n",
               ncol(xreg_train_full), qr_rank,
               ifelse(qr_rank < ncol(xreg_train_full), "-- RANK DEFICIENT", "-- full rank")))
-  
+
   weather_vars <- intersect(c("temp", "rain_1h", "snow_1h", "clouds_all"), names(df))
   if (length(weather_vars) > 1) {
     weather_cor <- cor(df[train_idx, weather_vars], use = "complete.obs")
@@ -246,11 +246,11 @@ fc_hi95_raw <- as.numeric(fc$upper[, 2]) + anchor_used
 actual    <- test_raw
 predicted <- fc_mean_raw
 
-mae  <- mean(abs(actual - predicted))
-rmse <- sqrt(mean((actual - predicted)^2))
-me   <- mean(actual - predicted)
-mape <- mean(abs((actual - predicted) / ifelse(actual == 0, NA, actual)), na.rm = TRUE) * 100
-smape<- mean(2 * abs(actual - predicted) / (abs(actual) + abs(predicted) + 1e-8)) * 100
+mae   <- mean(abs(actual - predicted))
+rmse  <- sqrt(mean((actual - predicted)^2))
+me    <- mean(actual - predicted)
+mape  <- mean(abs((actual - predicted) / ifelse(actual == 0, NA, actual)), na.rm = TRUE) * 100
+smape <- mean(2 * abs(actual - predicted) / (abs(actual) + abs(predicted) + 1e-8)) * 100
 
 # Seasonal-naive MASE scale (lag = 168 hours)
 scale <- mean(abs(
@@ -407,10 +407,10 @@ ts_full   <- ts(diff_full, frequency = 1)
 # future values for the next 168 hours must be supplied here.
 build_future_xreg <- function(dates, type = MODEL_TYPE) {
   if (type == "pure") return(NULL)
-  
+
   df_future <- data.frame(date_time = dates)
   df_future$is_holiday <- 0L # Standard assumption; update with holiday calendar if needed
-  
+
   if (type == "holiday") {
     mm <- model.matrix(~ is_holiday, data = df_future)[, -1, drop = FALSE]
   } else if (type == "full") {
@@ -473,8 +473,8 @@ df_future_out <- tibble(
 )
 
 # Save to output folder
-write.csv(df_future_out, 
-          file.path(output_dir, "sarima_future_1week_forecast.csv"), 
+write.csv(df_future_out,
+          file.path(output_dir, "sarima_future_1week_forecast.csv"),
           row.names = FALSE)
 cat("Saved future forecast to ->", file.path(output_dir, "sarima_future_1week_forecast.csv"), "\n")
 
@@ -490,7 +490,7 @@ p_future <- ggplot(df_future_out, aes(x = date_time, y = forecast_speed)) +
     x        = "Date & Time",
     y        = "Forecasted Traffic Volume (vehicles / hr)",
     caption  = "Shaded regions: 80% and 95% prediction intervals"
-  ) 
+  ) +
   theme_minimal(base_size = 11)
 
 ggsave(file.path(output_dir, "sarima_future_1week_forecast.png"), p_future, width = 12, height = 4, dpi = 150)
