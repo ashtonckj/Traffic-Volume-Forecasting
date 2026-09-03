@@ -1,3 +1,0 @@
-"series","adf_stat","adf_pvalue","adf_verdict","kpss_stat","kpss_pvalue","kpss_verdict"
-"raw_train",-13.9389579550146,0.01,"stationary",0.582284414451601,0.0242468714134908,"non-stationary"
-"diff_train",-15.7934365734534,0.01,"stationary",0.0460735559067832,0.1,"stationary"

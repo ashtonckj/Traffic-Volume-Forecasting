@@ -14,7 +14,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 
 # ── 1. Paths & Model Configuration ───────────────────────────
 input_path       <- "data/processed/traffic_volume_processed.csv"
-MODEL_TYPE       <- "pure" # Options: "pure", "holiday", "full"
+MODEL_TYPE       <- "full" # Options: "pure", "holiday", "full"
 REFIT_WITH_VALID <- FALSE  # Set TRUE to combine Train+Valid before test forecast
 FAST_RUN         <- TRUE   # Set FALSE for exhaustive search before final submission
 
@@ -380,6 +380,120 @@ write(toJSON(summary_list, pretty = TRUE, auto_unbox = TRUE),
 
 # ── 16. Save Fitted Model Object ─────────────────────────────
 saveRDS(fit, file.path(output_dir, "sarima_model.rds"))
+
+# ============================================================
+# ── 16b. True Out-of-Sample Future Forecast (1 Week) ─────────
+# ============================================================
+
+FUTURE_H <- 168 # 7 days * 24 hours
+
+# ── 1. Generate Future Hourly Timestamps ──────────────────────
+last_date <- max(df$date_time)
+future_dates <- seq(from = last_date + 3600, by = "hour", length.out = FUTURE_H)
+
+cat(sprintf("\nGenerating future forecast from %s to %s\n",
+            as.character(future_dates[1]),
+            as.character(tail(future_dates, 1))))
+
+
+# ── 2. Full-Data Seasonal Differencing (D=1, lag=168) ────────
+full_raw  <- df$traffic_volume
+diff_full <- diff(full_raw, lag = SEASON, differences = D_ORDER)
+ts_full   <- ts(diff_full, frequency = 1)
+
+
+# ── 3. Build Future Exogenous Features (xreg) ─────────────────
+# Note: For pure SARIMA, xreg is NULL. If using weather/holiday regressors,
+# future values for the next 168 hours must be supplied here.
+build_future_xreg <- function(dates, type = MODEL_TYPE) {
+  if (type == "pure") return(NULL)
+  
+  df_future <- data.frame(date_time = dates)
+  df_future$is_holiday <- 0L # Standard assumption; update with holiday calendar if needed
+  
+  if (type == "holiday") {
+    mm <- model.matrix(~ is_holiday, data = df_future)[, -1, drop = FALSE]
+  } else if (type == "full") {
+    # Using recent historical means as simple future weather proxies if unobserved
+    df_future$temp       <- mean(tail(df$temp, 168))
+    df_future$rain_1h    <- 0
+    df_future$snow_1h    <- 0
+    df_future$clouds_all <- mean(tail(df$clouds_all, 168))
+    mm <- model.matrix(~ is_holiday + temp + rain_1h + snow_1h + clouds_all, data = df_future)[, -1, drop = FALSE]
+  }
+  return(mm)
+}
+
+xreg_full_fit <- build_xreg(1:nrow(df))
+if (!is.null(xreg_full_fit)) {
+  # Trim initial SEASON rows due to lag differencing drop
+  xreg_full_fit <- xreg_full_fit[(SEASON + 1):nrow(xreg_full_fit), , drop = FALSE]
+}
+xreg_future <- build_future_xreg(future_dates)
+
+
+# ── 4. Refit Model on Complete Historical Dataset ─────────────
+cat("Refitting model on complete dataset...\n")
+fit_full <- Arima(
+  ts_full,
+  model = fit,            # Re-uses optimized (p,d,q) orders from your training fit
+  xreg  = xreg_full_fit
+)
+
+
+# ── 5. Generate Out-of-Sample Forecast ────────────────────────
+fc_future <- forecast(fit_full, xreg = xreg_future, h = FUTURE_H)
+
+
+# ── 6. Recursive Level Reconstruction (Using Last 168 Observed Hours)
+# Anchor sequence starts with the last 168 actual volume observations in your dataset
+recon_future <- c(tail(full_raw, SEASON), rep(NA_real_, FUTURE_H))
+
+for (i in seq_len(FUTURE_H)) {
+  recon_future[SEASON + i] <- as.numeric(fc_future$mean[i]) + recon_future[i]
+}
+
+fc_future_mean <- recon_future[(SEASON + 1):(SEASON + FUTURE_H)]
+anchor_future  <- recon_future[1:FUTURE_H]
+
+fc_future_lo80 <- as.numeric(fc_future$lower[, 1]) + anchor_future
+fc_future_hi80 <- as.numeric(fc_future$upper[, 1]) + anchor_future
+fc_future_lo95 <- as.numeric(fc_future$lower[, 2]) + anchor_future
+fc_future_hi95 <- as.numeric(fc_future$upper[, 2]) + anchor_future
+
+
+# ── 7. Package Future Forecast Results ─────────────────────────
+df_future_out <- tibble(
+  date_time      = future_dates,
+  forecast_speed = fc_future_mean,
+  lo80           = fc_future_lo80,
+  hi80           = fc_future_hi80,
+  lo95           = fc_future_lo95,
+  hi95           = fc_future_hi95
+)
+
+# Save to output folder
+write.csv(df_future_out, 
+          file.path(output_dir, "sarima_future_1week_forecast.csv"), 
+          row.names = FALSE)
+cat("Saved future forecast to ->", file.path(output_dir, "sarima_future_1week_forecast.csv"), "\n")
+
+
+# ── 8. Plot Future Forecast ───────────────────────────────────
+p_future <- ggplot(df_future_out, aes(x = date_time, y = forecast_speed)) +
+  geom_ribbon(aes(ymin = lo95, ymax = hi95), fill = "#a6cee3", alpha = 0.4) +
+  geom_ribbon(aes(ymin = lo80, ymax = hi80), fill = "#1f78b4", alpha = 0.3) +
+  geom_line(colour = "#e34a33", linewidth = 0.8) +
+  labs(
+    title    = "SARIMA — 7-Day Out-of-Sample Traffic Volume Forecast",
+    subtitle = sprintf("Projecting October 9, 2018 to October 15, 2018 (H = %d hours)", FUTURE_H),
+    x        = "Date & Time",
+    y        = "Forecasted Traffic Volume (vehicles / hr)",
+    caption  = "Shaded regions: 80% and 95% prediction intervals"
+  ) 
+  theme_minimal(base_size = 11)
+
+ggsave(file.path(output_dir, "sarima_future_1week_forecast.png"), p_future, width = 12, height = 4, dpi = 150)
 
 
 # ── 17. Execution Complete ───────────────────────────────────
